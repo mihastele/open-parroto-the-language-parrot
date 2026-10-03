@@ -1,0 +1,21 @@
+{
+  "name": "parroto",
+  "version": "1.0.0",
+  "description": "Parroto — learn a language by parroting it back. A fully-featured language-learning app with zero dependencies.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node bin/parroto.mjs",
+    "dev": "node --watch bin/parroto.mjs",
+    "doctor": "node bin/parroto.mjs --doctor",
+    "seed": "node tools/seed.mjs",
+    "validate": "node tools/validate-content.mjs",
+    "test": "node bin/run-tests.mjs",
+    "reset": "node tools/seed.mjs --reset"
+  },
+  "keywords": ["language-learning", "education", "spaced-repetition", "gamification"],
+  "license": "MIT"
+}
