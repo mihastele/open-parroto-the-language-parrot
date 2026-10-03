@@ -224,8 +224,27 @@ export class Service {
   }
 
   myCourses(userId) {
-    const rows = this.db.prepare("SELECT course_id FROM user_courses WHERE user_id = ?").all(userId);
+    // The "learning" course first, then the rest by when they were started. Without the
+    // ordering, switching course would appear to do nothing: home() always takes the first.
+    const rows = this.db.prepare(
+      "SELECT course_id FROM user_courses WHERE user_id = ? ORDER BY learning DESC, started_at ASC"
+    ).all(userId);
     return rows.map((r) => this.courseState(userId, r.course_id));
+  }
+
+  /** Makes `courseId` the course the user is actively learning. */
+  switchCourse(userId, courseId) {
+    const course = getCourse(courseId);
+    if (!course) throw notFound(`No course ${courseId}`);
+    const enrolled = this.db.prepare(
+      "SELECT 1 AS x FROM user_courses WHERE user_id = ? AND course_id = ?").get(userId, courseId);
+    if (!enrolled) this.enrol(userId, courseId);
+
+    this.db.prepare("UPDATE user_courses SET learning = 0 WHERE user_id = ?").run(userId);
+    this.db.prepare("UPDATE user_courses SET learning = 1 WHERE user_id = ? AND course_id = ?")
+      .run(userId, courseId);
+    this.logEvent(userId, "switch_course", { courseId });
+    return this.courseState(userId, courseId);
   }
 
   /** The full course tree for a user: skills, unlock state, crowns, SRS strength. */

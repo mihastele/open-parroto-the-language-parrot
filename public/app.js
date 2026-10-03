@@ -41,6 +41,7 @@ const state = {
   home: null,
   course: null,
   session: null,        // { sessionId, exercise, index, total, hearts }
+  pendingNext: null,    // the exercise to show after Continue, held while feedback is up
   feedback: null,
   story: null,
   answer: null,         // whatever the current exercise needs
@@ -262,7 +263,9 @@ function coursePicker() {
       class: "course-pick",
       onclick: async () => {
         try {
-          await API.post(`/api/courses/${c.id}/enrol`);
+          // Switching (not merely enrolling) is what makes the chosen course the active one,
+          // so picking a course here actually takes you into it.
+          await API.post(`/api/courses/${c.id}/switch`);
           await boot();
         } catch (e) { toast(e.message, "warn"); }
       },
@@ -314,8 +317,8 @@ function learnScreen() {
       }, `Review ${home.dueCount || ""}`.trim()),
       el("button", {
         class: "btn btn-ghost",
-        onclick: () => { state.screen = "courses"; render(); },
-      }, "Courses"),
+        onclick: () => switchCourseDialog(),
+      }, `Course ${course.flag}`),
     ),
 
     course.stories.filter((s) => s.unlocked).length
@@ -378,6 +381,7 @@ async function startSession({ kind, skillId }) {
       courseId: state.currentCourse.id, skillId, kind, clientDay: state.day,
     });
     state.session = res;
+    state.pendingNext = null;
     state.answer = emptyAnswer(res.exercise);
     state.feedback = null;
     state.screen = "lesson";
@@ -397,6 +401,7 @@ async function startStory(storyId) {
       courseId: state.currentCourse.id, kind: "story", storyId, clientDay: state.day,
     });
     state.session = res;
+    state.pendingNext = null;
     state.story = { id: storyId, page: 0, answers: {}, revealed: false };
     state.screen = "story";
     render();
@@ -790,8 +795,10 @@ async function submitAnswer() {
     });
 
     if (res.resync) {
-      // The server had already graded this exercise; move on to whatever it says is current.
+      // The server had already graded this exercise, so there is no feedback to show — the
+      // pending exercise in the payload is simply the current one. Adopt it and carry on.
       state.session = { ...s, exercise: res.next, index: res.index, total: res.total, hearts: res.hearts };
+      state.pendingNext = null;
       state.feedback = null;
       state.answer = emptyAnswer(res.next);
       render();
@@ -799,13 +806,18 @@ async function submitAnswer() {
       return;
     }
 
-    state.session = { ...s, ...res, exercise: res.next ?? s.exercise, index: res.index ?? s.index,
-                      total: res.total ?? s.total, hearts: res.hearts };
+    // IMPORTANT: keep showing the exercise that was just answered while the feedback bar is up.
+    // Adopting `res.next` here rendered the following question behind the bar, before the user
+    // had even pressed Continue — and made the progress bar and "n / total" jump ahead one
+    // question. The next exercise is held in `pendingNext` and only promoted by nextExercise().
+    state.session = { ...s, hearts: res.hearts };
+    state.pendingNext = res.next
+      ? { exercise: res.next, index: res.index, total: res.total }
+      : null;
     state.feedback = { ...res.result, finished: res.finished, summary: res.summary };
     state.lastSummary = res.summary ?? state.lastSummary;
-    // If the server already handed us the next exercise, clear the pending answer for it now.
-    // Otherwise the feedback bar renders against the old answer and the following render
-    // crashes on a shape mismatch.
+    // The pending answer belongs to the exercise that is coming next, so reset it to that
+    // type's shape now — otherwise the next render draws against the old value and throws.
     if (res.next) state.answer = emptyAnswer(res.next);
     render();
   } catch (err) {
@@ -831,6 +843,7 @@ async function resyncSession(sessionId) {
     }
     state.session = { ...state.session, exercise: next.exercise, index: next.index, total: next.total,
                       hearts: next.hearts };
+    state.pendingNext = null;
     state.feedback = null;
     state.answer = emptyAnswer(next.exercise);
     render();
@@ -846,7 +859,18 @@ async function resyncSession(sessionId) {
 function nextExercise() {
   if (state.feedback?.finished) return showResults(state.feedback.summary ?? state.lastSummary);
   state.feedback = null;
-  // The next exercise is a different type, so the pending answer must be reset to match it.
+  // Promote the exercise the server handed us when this one was graded. Only now does the
+  // question on screen change — pressing Continue is what advances the lesson.
+  if (state.pendingNext) {
+    state.session = {
+      ...state.session,
+      exercise: state.pendingNext.exercise,
+      index: state.pendingNext.index,
+      total: state.pendingNext.total,
+    };
+    state.pendingNext = null;
+  }
+  // The next exercise is a different type, so the pending answer must match its shape.
   state.answer = emptyAnswer(state.session.exercise);
   render();
   afterRenderForExercise(state.session.exercise);
@@ -854,6 +878,7 @@ function nextExercise() {
 
 function showResults(summary) {
   state.session = null;
+  state.pendingNext = null;
   state.feedback = null;
   if (!summary) { state.screen = "learn"; return loadScreen(); }
   showDialog({
@@ -993,14 +1018,19 @@ function profileScreen() {
     ),
 
     el("h2", { text: "Courses" }),
+    el("p", { class: "small muted", text: "Tap a course to switch. Progress is kept for each one." }),
     el("div", { class: "card" },
       ...courses.map((c) => {
         const mine = state.myCourses?.find((m) => m.id === c.id);
+        const isCurrent = state.currentCourse?.id === c.id;
         return el("button", {
-          class: "course-pick", style: "margin-bottom:6px",
+          class: "course-pick", style: `margin-bottom:6px;${isCurrent ? "border-color:var(--green)" : ""}`,
           onclick: async () => {
-            await API.post(`/api/courses/${c.id}/enrol`);
-            await boot();
+            try {
+              await API.post(`/api/courses/${c.id}/switch`);
+              await boot();          // re-reads home, so the path below changes to this course
+              toast(`Now learning ${c.name}`, "good");
+            } catch (e) { toast(e.message, "warn"); }
           },
         },
           el("span", { class: "flag", text: c.flag }),
@@ -1009,6 +1039,8 @@ function profileScreen() {
             el("div", { class: "small muted" },
               mine ? `${mine.crowns} crowns · ${mine.xp} XP` : "Not started"),
           ),
+          isCurrent ? el("span", { class: "pill green", text: "learning" })
+                    : el("span", { class: "pill", text: "switch" }),
         );
       }),
     ),
@@ -1023,6 +1055,45 @@ function profileScreen() {
     el("p", { class: "small muted center", style: "margin-top:20px" },
       "Parroto · learn a language by parroting it back"),
   ));
+}
+
+/** A quick course switcher, so changing language does not require a trip to Profile. */
+function switchCourseDialog() {
+  const enrolled = state.myCourses ?? [];
+  const all = state.meta?.courses ?? enrolled;
+  const list = all.length ? all : enrolled;
+  showDialog({
+    emoji: "🌍",
+    title: "Switch course",
+    body: "Pick the language you want to learn. Each course keeps its own progress.",
+    extra: el("div", { class: "col", style: "margin-top:14px;text-align:left" },
+      ...list.map((c) => {
+        const mine = enrolled.find((m) => m.id === c.id);
+        const isCurrent = state.currentCourse?.id === c.id;
+        return el("button", {
+          class: "course-pick", style: "margin-bottom:6px",
+          disabled: isCurrent,
+          onclick: async () => {
+            try {
+              closeDialog();
+              await API.post(`/api/courses/${c.id}/switch`);
+              await boot();
+              toast(`Now learning ${c.name}`, "good");
+            } catch (e) { toast(e.message, "warn"); }
+          },
+        },
+          el("span", { class: "flag", text: c.flag }),
+          el("span", { class: "grow" },
+            el("div", { class: "bold", text: c.name }),
+            el("div", { class: "small muted" },
+              mine ? `${mine.crowns} crowns · ${mine.xp} XP` : "Not started"),
+          ),
+          isCurrent ? el("span", { class: "pill green", text: "learning" }) : null,
+        );
+      }),
+    ),
+    actions: [{ label: "Close", kind: "ghost", onclick: closeDialog }],
+  });
 }
 
 function statCard(icon, value, label) {

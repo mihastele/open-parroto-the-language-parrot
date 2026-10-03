@@ -146,6 +146,8 @@ function buildRoutes(service) {
     s.courseState(user.id, params.courseId));
   add("POST", "/api/courses/:courseId/enrol", ({ user, params, service: s }) =>
     s.enrol(user.id, params.courseId));
+  add("POST", "/api/courses/:courseId/switch", ({ user, params, service: s }) =>
+    s.switchCourse(user.id, params.courseId));
 
   add("GET", "/api/courses/:courseId/stories/:storyId", ({ user, params, service: s }) => {
     if (!COURSES.some((c) => c.id === params.courseId)) {

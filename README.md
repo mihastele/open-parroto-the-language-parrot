@@ -93,9 +93,15 @@ Grading is deliberately human, matching how the real product behaves:
 | Course | Skills | Words | Stories |
 |---|---|---|---|
 | 🇪🇸 Spanish | 7 | 72 | 2 |
-| 🇫🇷 French | 3 | 26 | 1 |
+| 🇳🇴 Norwegian | 7 | 71 | 2 |
+| 🇸🇪 Swedish | 7 | 71 | 2 |
 | 🇩🇪 German | 3 | 24 | — |
-| 🇮🇹 Italian | 2 | 15 | — |
+| 🇮🇹 Italian | 4 | 37 | — |
+| 🇫🇷 French | 3 | 26 | 1 |
+
+Every course reaches **11/11 exercise types**. Switch between them any time — from the course
+button on the Learn screen, or from Profile. Each course keeps its own skills, crowns, XP and
+review schedule, so you never lose progress by switching.
 
 **All content is original**, written for this project. It follows Duolingo's *shape* — greeting
 first, then food, family, animals, travel, phrases — but none of it is copied from Duolingo's
@@ -110,7 +116,7 @@ every exercise type, the SRS schedule, the course path and the stories pick it u
 npm test
 ```
 
-**116 tests, no network, no browser, no fixtures** — an in-memory SQLite database per test.
+**119 tests, no network, no browser, no fixtures** — an in-memory SQLite database per test.
 Verified passing on both Node 22.12 (with the flag, added automatically) and Node 26.
 
 - `tests/core.test.mjs` — grading of every exercise type, the SRS scheduler, streak/heart

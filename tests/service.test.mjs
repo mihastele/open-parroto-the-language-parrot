@@ -903,8 +903,58 @@ test("disabling speaking removes speaking exercises from lessons", () => {
   assert.ok(!types.includes("speak"), `speaking is off, but found: ${[...new Set(types)]}`);
 });
 
+test("switching course changes the active course and keeps each course's progress", () => {
+  // Regression: home() returned whichever course was enrolled first, so picking a different
+  // course appeared to do nothing at all.
+  const { service } = freshService();
+  const u = newUser(service);
+
+  service.enrol(u.id, "es-en");
+  service.switchCourse(u.id, "nb-en");
+
+  const home = service.home(u.id);
+  assert.equal(home.currentCourse.id, "nb-en", "the switched-to course is the active one");
+  assert.equal(home.courses.length, 2, "both courses remain enrolled");
+  assert.equal(home.courses[0].id, "nb-en", "the active course is listed first");
+  assert.equal(home.courses[0].skills[0].unlocked, true);
+  assert.equal(home.courses[1].id, "es-en");
+
+  // Play a Norwegian lesson, then switch back: Spanish progress must be untouched.
+  service.database.prepare("UPDATE users SET hearts = 5 WHERE id = ?").run(u.id);
+  const s = service.startSession(u.id, {
+    courseId: "nb-en", skillId: getCourse("nb-en").skills[0].id, kind: "lesson",
+  });
+  const end = playSession(service, u.id, s.sessionId);
+  assert.equal(end.summary.passed, true, "a Norwegian lesson is playable");
+
+  service.switchCourse(u.id, "es-en");
+  const back = service.home(u.id);
+  assert.equal(back.currentCourse.id, "es-en");
+  const nb = back.courses.find((c) => c.id === "nb-en");
+  assert.equal(nb.crowns, 1, "the Norwegian crown is kept");
+  const es = back.courses.find((c) => c.id === "es-en");
+  assert.equal(es.crowns, 0, "Spanish progress is separate and untouched");
+});
+
+test("switching to a course you are not enrolled in enrols you", () => {
+  const { service } = freshService();
+  const u = newUser(service);
+  service.enrol(u.id, "es-en");
+  const state = service.switchCourse(u.id, "sv-en");
+  assert.equal(state.id, "sv-en");
+  assert.equal(state.enrolled, true);
+  assert.equal(service.home(u.id).currentCourse.id, "sv-en");
+});
+
+test("switching to an unknown course is refused", () => {
+  const { service } = freshService();
+  const u = newUser(service);
+  const err = (() => { try { service.switchCourse(u.id, "xx-en"); } catch (e) { return e; } })();
+  assert.equal(err.code, "not_found");
+});
+
 test("every course can be played through its first skill", () => {
-  for (const courseId of ["es-en", "fr-en", "de-en", "it-en"]) {
+  for (const courseId of ["es-en", "fr-en", "de-en", "it-en", "nb-en", "sv-en"]) {
     const { service } = freshService();
     const u = newUser(service, `player_${courseId.replace(/\W/g, "")}`);
     service.enrol(u.id, courseId);
