@@ -890,17 +890,29 @@ test("settings round-trip", () => {
   assert.equal(reread.dailyGoal, 50, "settings persist");
 });
 
-test("disabling speaking removes speaking exercises from lessons", () => {
-  const { service } = freshService();
-  const u = newUser(service);
-  service.enrol(u.id, "es-en");
-  service.updateSettings(u.id, { speakingEnabled: false });
-  const skill = getCourse("es-en").skills[0].id;
+test("speaking exercises are offered in every course regardless of the setting", () => {
+  // The setting no longer removes speaking from lessons — it only affects how strictly speech is
+  // judged, and the client always offers a type-in fallback. Removing the exercise outright made
+  // "speaking for all languages" impossible for anyone who had ever toggled it off.
+  for (const courseId of ["es-en", "fr-en", "de-en", "it-en", "nb-en", "sv-en"]) {
+    const { service } = freshService();
+    const u = newUser(service, `speak_${courseId.replace(/\W/g, "")}`);
+    service.enrol(u.id, courseId);
+    service.updateSettings(u.id, { speakingEnabled: false });
 
-  const session = service.startSession(u.id, { courseId: "es-en", skillId: skill, kind: "lesson" });
-  const row = service.database.prepare("SELECT * FROM lesson_sessions WHERE id = ?").get(session.sessionId);
-  const types = JSON.parse(row.state).exercises.map((e) => e.type);
-  assert.ok(!types.includes("speak"), `speaking is off, but found: ${[...new Set(types)]}`);
+    const course = getCourse(courseId);
+    let sawSpeak = false;
+    for (const skill of course.skills.slice(0, 4)) {
+      for (let attempt = 0; attempt < 6 && !sawSpeak; attempt++) {
+        const s = service.startSession(u.id, { courseId, skillId: skill.id, kind: "practice" });
+        const state = JSON.parse(service.database.prepare(
+          "SELECT state FROM lesson_sessions WHERE id = ?").get(s.sessionId).state);
+        if (state.exercises.some((e) => e.type === "speak")) sawSpeak = true;
+      }
+      if (sawSpeak) break;
+    }
+    assert.equal(sawSpeak, true, `${courseId} must still offer speaking exercises`);
+  }
 });
 
 test("switching course changes the active course and keeps each course's progress", () => {
@@ -951,6 +963,117 @@ test("switching to an unknown course is refused", () => {
   const u = newUser(service);
   const err = (() => { try { service.switchCourse(u.id, "xx-en"); } catch (e) { return e; } })();
   assert.equal(err.code, "not_found");
+});
+
+test("the answer payload carries why it was marked, for the client to render", () => {
+  // Regression: `mistake` and `diff` were dropped by the service, so the UI could not say
+  // "close enough" or show which word was wrong — it only ever showed bare feedback text.
+  const { service } = freshService();
+  const u = newUser(service);
+  service.enrol(u.id, "es-en");
+
+  /** Answers correctly until an exercise satisfying `want` is pending, then returns it. */
+  const advanceTo = (sessionId, want) => {
+    for (let guard = 0; guard < 40; guard++) {
+      const st = JSON.parse(service.database.prepare(
+        "SELECT state FROM lesson_sessions WHERE id = ?").get(sessionId).state);
+      const ex = st.exercises[st.exerciseIndex];
+      if (!ex) return null;
+      if (want(ex)) return ex;
+      const r = service.answer(u.id, sessionId, { exerciseId: ex.id, answer: correctAnswer(ex) });
+      if (r.finished) return null;
+    }
+    return null;
+  };
+
+  // A forgiven near miss needs a multi-word answer, which not every session contains.
+  let sawSwap = false;
+  for (const skill of getCourse("es-en").skills.slice(0, 3)) {
+    const s = service.startSession(u.id, { courseId: "es-en", skillId: skill.id, kind: "practice" });
+    const ex = advanceTo(s.sessionId, (e) =>
+      e.type === "translate" && String(e.answer ?? "").split(" ").filter(Boolean).length >= 2);
+    if (!ex) continue;
+    const words = String(ex.answer).split(" ");
+    const swapped = [words[1], words[0], ...words.slice(2)].join(" ");
+    const near = service.answer(u.id, s.sessionId, { exerciseId: ex.id, answer: swapped });
+    assert.equal(near.result.correct, true, `"${swapped}" should be forgiven for "${ex.answer}"`);
+    assert.equal(near.result.mistake, "word_swap", "the client is told it was a word swap");
+    sawSwap = true;
+    break;
+  }
+  assert.ok(sawSwap, "expected at least one multi-word translate exercise across three skills");
+
+  // A genuine failure carries a word-level diff.
+  const s2 = service.startSession(u.id, { courseId: "es-en", skillId: getCourse("es-en").skills[0].id, kind: "practice" });
+  const ex2 = advanceTo(s2.sessionId, (e) => e.type === "translate" || e.type === "word_bank");
+  const bad = service.answer(u.id, s2.sessionId, { exerciseId: ex2.id, answer: "__zzz__" });
+  assert.equal(bad.result.correct, false);
+  assert.ok(Array.isArray(bad.result.diff) && bad.result.diff.length > 0,
+    "a wrong answer should explain itself word by word");
+  assert.ok(bad.result.diff.every((d) => ["ok", "wrong", "missing", "extra"].includes(d.status)));
+});
+
+test("the hint ladder is served over the session and marks the attempt as spent", () => {
+  const { service } = freshService();
+  const u = newUser(service);
+  service.enrol(u.id, "es-en");
+  const skill = getCourse("es-en").skills[0];
+  const s = service.startSession(u.id, { courseId: "es-en", skillId: skill.id, kind: "practice" });
+  const raw = JSON.parse(service.database.prepare(
+    "SELECT state FROM lesson_sessions WHERE id = ?").get(s.sessionId).state).exercises[0];
+
+  // Preview: labels only, never the answer text.
+  const preview = service.hint(u.id, s.sessionId, { exerciseId: raw.id });
+  assert.equal(preview.supported, true);
+  assert.ok(preview.hints.length > 0);
+  assert.ok(preview.hints.every((h) => h.text === undefined), "preview must not leak text");
+
+  // Reveal the last rung.
+  const lastStep = preview.hints[preview.hints.length - 1].step;
+  const revealed = service.hint(u.id, s.sessionId, { exerciseId: raw.id, step: lastStep });
+  assert.equal(revealed.spent, true);
+  const expected = Array.isArray(raw.answer) ? raw.answer.join(" ") : String(raw.answer);
+  assert.equal(revealed.hint.text, expected, "the last rung gives the answer");
+
+  // Answering it correctly is accepted, but the combo does not advance.
+  const r = service.answer(u.id, s.sessionId, { exerciseId: raw.id, answer: correctAnswer(raw) });
+  assert.equal(r.result.correct, true);
+  assert.equal(r.result.hinted, true);
+  assert.equal(r.combo, 0, "a hinted answer must not extend the combo");
+  assert.match(r.result.feedback, /hint/i);
+});
+
+test("hints are refused for a different exercise, and unknown steps are a clear error", () => {
+  const { service } = freshService();
+  const u = newUser(service);
+  service.enrol(u.id, "es-en");
+  const skill = getCourse("es-en").skills[0];
+  const s = service.startSession(u.id, { courseId: "es-en", skillId: skill.id, kind: "practice" });
+
+  const wrongEx = (() => {
+    try { service.hint(u.id, s.sessionId, { exerciseId: "not-this-one", step: 1 }); }
+    catch (e) { return e; }
+  })();
+  assert.equal(wrongEx.code, "out_of_sync");
+
+  const badStep = (() => {
+    try { service.hint(u.id, s.sessionId, { exerciseId: s.exercise.id, step: 99 }); }
+    catch (e) { return e; }
+  })();
+  assert.equal(badStep.code, "no_such_hint");
+});
+
+test("a story has no hint ladder and says so instead of erroring", () => {
+  const { service } = freshService();
+  const u = newUser(service);
+  service.enrol(u.id, "es-en");
+  service.database.prepare(
+    "UPDATE skill_progress SET unlocked = 1, level = 5, crowns = 5 WHERE user_id = ?").run(u.id);
+  const story = storiesFor("es-en")[0];
+  const s = service.startSession(u.id, { courseId: "es-en", kind: "story", storyId: story.id });
+  const res = service.hint(u.id, s.sessionId, { exerciseId: s.exercise.id });
+  assert.equal(res.supported, false);
+  assert.deepEqual(res.hints, []);
 });
 
 test("every course can be played through its first skill", () => {

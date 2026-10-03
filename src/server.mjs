@@ -182,6 +182,12 @@ function buildRoutes(service) {
   add("GET", "/api/lessons/:id/exercise", ({ user, params, service: s }) =>
     s.currentExercise(user.id, params.id));
 
+  // Hint ladder: a GET previews the available rungs, a POST serves one of them.
+  add("GET", "/api/lessons/:id/hints", ({ user, params, query, service: s }) =>
+    s.hint(user.id, params.id, { exerciseId: query.exerciseId }));
+  add("POST", "/api/lessons/:id/hint", ({ user, params, body, service: s }) =>
+    s.hint(user.id, params.id, body ?? {}));
+
   // ---- practice / review
   add("POST", "/api/practice", ({ user, body, service: s }) =>
     s.startSession(user.id, { ...body, kind: "practice" }));

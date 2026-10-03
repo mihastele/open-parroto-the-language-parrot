@@ -43,8 +43,52 @@ export function normalise(text, { language = "es", keepAccents = true } = {}) {
 }
 
 export function stripAccents(s) {
-  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  return String(s)
+    // Letters NFD does not decompose into ASCII-able forms. Without these, "ich heiße" would
+    // not match "ich heisse" and "bjørnen" would not match "bjornen" — a real gap for German
+    // and the Nordic courses.
+    .replace(/ß/g, "ss").replace(/ẞ/g, "SS")
+    .replace(/ø/g, "o").replace(/Ø/g, "O")
+    .replace(/æ/g, "ae").replace(/Æ/g, "AE")
+    .replace(/œ/g, "oe").replace(/Œ/g, "OE")
+    .replace(/å/g, "a").replace(/Å/g, "A")
+    .replace(/đ/g, "d").replace(/ð/g, "d").replace(/þ/g, "th")
+    .replace(/ł/g, "l").replace(/Ł/g, "L")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
+
+// ---------------------------------------------------------------------------
+// Forgiving comparison
+// ---------------------------------------------------------------------------
+
+/**
+ * Articles/particles that a learner routinely drops or adds. Ignoring these lets us accept
+ * "quiero agua" for "yo quiero agua" without accepting genuinely wrong answers.
+ */
+const FILLER_WORDS = new Set([
+  "el", "la", "los", "las", "un", "una", "unos", "unas",
+  "le", "les", "du", "de", "des", "der", "die", "das",
+  "il", "lo", "gli", "i", "l", "en", "ett",
+  "yo", "jeg", "jag", "ich", "io", "je",
+]);
+
+/**
+ * Words that reverse a sentence's meaning. Dropping one is never a "slight slip".
+ */
+const NEGATIONS = new Set([
+  "no", "not", "nicht", "kein", "keine", "ne", "pas", "non",
+  "inte", "ikke", "ej", "ni", "niet", "nu",
+]);
+
+/** Words so short that a single-character edit is meaningless. */
+const MIN_TYPO_LENGTH = 4;
+
+/** How many character-level mistakes a long answer may contain and still pass. */
+const LONG_ANSWER_MIN_WORDS = 4;
+const LONG_ANSWER_ERROR_RATE = 0.12;
+
+/** Longest answer (in characters) still eligible for the fuzzy fallback. */
+const LONG_ANSWER_MAX_CHARS = 80;
 
 /** Levenshtein distance, used for "almost correct" typos. */
 export function editDistance(a, b) {
@@ -64,6 +108,223 @@ export function editDistance(a, b) {
     [prev, cur] = [cur, prev];
   }
   return prev[n];
+}
+
+/**
+ * Damerau-Levenshtein distance: like Levenshtein but a swap of two adjacent characters
+ * counts as ONE edit. This is the single most common typing error ("hte" for "the").
+ */
+export function editDistanceWithTransposition(a, b) {
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const d = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) d[i][0] = i;
+  for (let j = 0; j <= n; j++) d[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+      }
+    }
+  }
+  return d[m][n];
+}
+
+/** Similarity of two strings, 0..1, based on edit distance over the longer string. */
+export function similarity(a, b) {
+  const longest = Math.max(a.length, b.length);
+  if (longest === 0) return 1;
+  return 1 - editDistance(a, b) / longest;
+}
+
+/**
+ * True when two strings differ only by one pair of adjacent characters being swapped.
+ * This is the safest kind of "typo" to forgive: it cannot produce a different real word by
+ * accident in the same way a substitution can ("gato" -> "pato").
+ */
+export function isTransposition(a, b) {
+  if (a.length !== b.length) return false;
+  const diff = [];
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) diff.push(i);
+  if (diff.length !== 2 || diff[1] !== diff[0] + 1) return false;
+  const [i, j] = diff;
+  return a[i] === b[j] && a[j] === b[i];
+}
+
+/**
+ * Is a one-edit difference safe to forgive in this word?
+ *
+ * The kinds of edit are not equally risky:
+ *  - A transposition (swapped neighbouring letters) is always safe.
+ *  - An insertion/deletion rarely turns a word into a *different* real word, so it is forgiven
+ *    on ordinary-length words ("hetr" for "heter").
+ *  - A substitution is the risky one — that is exactly how you get "gato"/"pato" — so it is only
+ *    forgiven on longer words, where it is far more likely to be a slip than a different word.
+ */
+function forgivingWordEdit(expected, given) {
+  if (expected === given) return false;
+  const d = editDistanceWithTransposition(expected, given);
+  if (d > 1) return false;
+  if (isTransposition(expected, given)) return true;
+  const sameLength = expected.length === given.length;
+  if (!sameLength) {
+    // An insertion or deletion: judge by how long the *expected* word is. "hetr" for "heter"
+    // drops a letter from a 5-letter word, which is a slip — not the learner choosing another
+    // word. Comparing against the shorter string (4) rejected this case entirely.
+    return expected.length >= 4;
+  }
+  return expected.length >= 6;   // substitution: riskier, so only on longer words
+}
+
+/**
+ * Classifies how `given` differs from `expected`, returning null when they are equivalent.
+ *
+ * The order matters: unambiguous word-level categories first (a swap is definitely a swap),
+ * then filler-word differences, then character-level typos last.
+ */
+export function classifyMistake(expected, given, lang = "es") {
+  const na = normalise(expected, { language: lang });
+  const ng = normalise(given, { language: lang });
+  if (na === ng) return null;
+
+  // Accents only.
+  if (stripAccents(na) === stripAccents(ng)) return "accents";
+
+  const aTokens = na.split(" ").filter(Boolean);
+  const gTokens = ng.split(" ").filter(Boolean);
+
+  // Two adjacent words swapped ("quiero yo" vs "yo quiero"). This must be checked BEFORE the
+  // filler-word rule: "yo" is a filler, so dropping it would otherwise look like "extra_word".
+  if (aTokens.length === gTokens.length && aTokens.length >= 2) {
+    const diffs = [];
+    for (let i = 0; i < aTokens.length; i++) if (aTokens[i] !== gTokens[i]) diffs.push(i);
+    if (diffs.length === 2 && diffs[1] === diffs[0] + 1) {
+      const [i, j] = diffs;
+      if (aTokens[i] === gTokens[j] && aTokens[j] === gTokens[i]) return "word_swap";
+    }
+  }
+
+  // Words in the right order but a stray article added or dropped.
+  const aCore = aTokens.filter((t) => !FILLER_WORDS.has(t));
+  const gCore = gTokens.filter((t) => !FILLER_WORDS.has(t));
+  if (aCore.length > 0 && aCore.join(" ") === gCore.join(" ")) return "extra_word";
+
+  // Same word count: one or two slightly-misspelled words.
+  if (aTokens.length === gTokens.length && aTokens.length > 0) {
+    const wrong = [];
+    for (let i = 0; i < aTokens.length; i++) if (aTokens[i] !== gTokens[i]) wrong.push(i);
+    if (wrong.length === 1) {
+      const i = wrong[0];
+      if (aTokens[i].length >= MIN_TYPO_LENGTH && forgivingWordEdit(aTokens[i], gTokens[i])) {
+        return "typo";
+      }
+    }
+    if (wrong.length === 2 && aTokens.length >= 4) {
+      const bothClose = wrong.every((i) =>
+        aTokens[i].length >= MIN_TYPO_LENGTH && forgivingWordEdit(aTokens[i], gTokens[i]));
+      if (bothClose) return "typos";
+    }
+  }
+
+  // A whole missing or extra word in a longer sentence. Negations are excluded, since dropping
+  // "no"/"nicht"/"inte" reverses the meaning.
+  if (aTokens.length >= 3 && Math.abs(aTokens.length - gTokens.length) === 1) {
+    const shorter = aTokens.length < gTokens.length ? aTokens : gTokens;
+    const longer = aTokens.length < gTokens.length ? gTokens : aTokens;
+    const dropped = longer.find((t) => !shorter.includes(t));
+    if (dropped && !NEGATIONS.has(dropped)) {
+      for (let drop = 0; drop < longer.length; drop++) {
+        const candidate = longer.slice(0, drop).concat(longer.slice(drop + 1));
+        if (candidate.join(" ") === shorter.join(" ")) {
+          return aTokens.length < gTokens.length ? "extra_word" : "missing_word";
+        }
+      }
+    }
+  }
+
+  // Last resort for longer answers: a small overall character error.
+  if (aTokens.length >= LONG_ANSWER_MIN_WORDS && na.length <= LONG_ANSWER_MAX_CHARS) {
+    const allowed = Math.max(1, Math.floor(na.length * LONG_ANSWER_ERROR_RATE));
+    if (editDistanceWithTransposition(na, ng) <= allowed) return "close";
+  }
+
+  return null;
+}
+
+/** True when a mistake category is worth a passing grade. */
+function isForgiven(kind) {
+  return kind === "accents" || kind === "extra_word" || kind === "word_swap"
+      || kind === "typo" || kind === "typos" || kind === "missing_word" || kind === "close";
+}
+
+/** Grade to award for a forgiven mistake: milder kinds score higher. */
+function gradeForMistake(kind) {
+  switch (kind) {
+    case "accents": return 2;
+    case "extra_word": return 2;
+    case "word_swap": return 1;
+    case "missing_word": return 1;
+    case "typo": return 1;
+    case "typos": return 1;
+    case "close": return 1;
+    default: return 0;
+  }
+}
+
+/** A short, specific explanation of what went wrong, and the corrected phrase. */
+function feedbackForMistake(kind, expected) {
+  switch (kind) {
+    case "accents":
+      return `Correct — mind the accents: ${expected}`;
+    case "extra_word":
+      return `Correct, but you added a word you don't need: ${expected}`;
+    case "missing_word":
+      return `Almost — you dropped a word. It's: ${expected}`;
+    case "word_swap":
+      return `Right words, wrong order. It's: ${expected}`;
+    case "typo":
+      return `One letter off — it's spelled: ${expected}`;
+    case "typos":
+      return `A couple of letters off — it's: ${expected}`;
+    case "close":
+      return `Very close! The exact answer is: ${expected}`;
+    default:
+      return `Not quite. The answer is: ${expected}`;
+  }
+}
+
+/**
+ * A word-by-word diff, so the client can show *where* the answer went wrong rather than just
+ * "wrong". Returns one entry per expected token: ok | wrong | missing, plus any extras.
+ */
+export function diffWords(expected, given, lang = "es") {
+  const a = normalise(expected, { language: lang }).split(" ").filter(Boolean);
+  const g = normalise(given, { language: lang }).split(" ").filter(Boolean);
+  const out = [];
+  // Simple alignment: walk both, and once they diverge, resynchronise on the next match.
+  let i = 0, j = 0;
+  while (i < a.length) {
+    if (j < g.length && a[i] === g[j]) {
+      out.push({ expected: a[i], given: g[j], status: "ok" });
+      i++; j++;
+    } else {
+      const ahead = g.indexOf(a[i], j);
+      if (ahead > j) {
+        // The learner has extra words before this one.
+        for (let k = j; k < ahead; k++) out.push({ expected: null, given: g[k], status: "extra" });
+        out.push({ expected: a[i], given: g[ahead], status: "ok" });
+        j = ahead + 1; i++;
+      } else {
+        out.push({ expected: a[i], given: g[j] ?? null, status: g[j] ? "wrong" : "missing" });
+        i++; if (j < g.length) j++;
+      }
+    }
+  }
+  while (j < g.length) { out.push({ expected: null, given: g[j], status: "extra" }); j++; }
+  return out;
 }
 
 /**
@@ -135,57 +396,50 @@ function acceptedAnswers(exercise) {
 }
 
 function gradeText(exercise, answer, { lang = "es" } = {}) {
-  const given = normalise(answer, { language: lang });
   const accepted = acceptedAnswers(exercise);
   if (accepted.length === 0) {
     return { correct: false, grade: 0, feedback: "This exercise has no answer defined." };
   }
-  if (given.length === 0) {
+  const given = String(answer ?? "");
+  if (normalise(given, { language: lang }).length === 0) {
     return { correct: false, grade: 0, feedback: "No answer given.", expected: accepted[0] };
   }
 
-  // Correct as-is (with punctuation/case ignored).
+  // Perfect answer: only case/punctuation differ.
   for (const a of accepted) {
-    if (normalise(a, { language: lang }) === given) {
+    if (normalise(a, { language: lang }) === normalise(given, { language: lang })) {
       return { correct: true, grade: 3, expected: a, feedback: "Exactly right!" };
     }
   }
 
-  // Acceptable if you only missed accents — a real Duolingo behaviour.
-  const givenNoAccents = stripAccents(given);
+  // Otherwise work out *how* it differs, and be forgiving of the mistakes a learner actually
+  // makes: dropped accents, a stray article, two words swapped, a typo or two.
+  let best = null;
   for (const a of accepted) {
-    if (stripAccents(normalise(a, { language: lang })) === givenNoAccents) {
-      return {
+    const kind = classifyMistake(a, given, lang);
+    if (!kind) continue;
+    if (!isForgiven(kind)) continue;
+    const grade = gradeForMistake(kind);
+    if (!best || grade > best.grade) {
+      best = {
         correct: true,
-        grade: 2,
+        grade,
         expected: a,
-        feedback: `Correct, but watch the accents: ${a}`,
+        mistake: kind,
+        feedback: feedbackForMistake(kind, a),
+        diff: diffWords(a, given, lang),
       };
     }
   }
+  if (best) return best;
 
-  // One-character typo in a single word is forgiven. Compare token by token so a long
-  // sentence does not get a proportionally huge allowance.
-  for (const a of accepted) {
-    const na = normalise(a, { language: lang });
-    if (na.length <= 3) continue;
-    const aTokens = na.split(" ");
-    const gTokens = given.split(" ");
-    if (aTokens.length === gTokens.length) {
-      const wrongTokens = aTokens.filter((t, i) => t !== gTokens[i]);
-      if (wrongTokens.length === 1 && editDistance(wrongTokens[0], gTokens[aTokens.indexOf(wrongTokens[0])]) === 1) {
-        return { correct: true, grade: 1, expected: a, feedback: `Close enough — it's "${a}".` };
-      }
-    } else if (aTokens.length === 1 && editDistance(na, given) === 1) {
-      return { correct: true, grade: 1, expected: a, feedback: `Close enough — it's "${a}".` };
-    }
-  }
-
+  // Genuinely wrong. Still say what the answer was.
   return {
     correct: false,
     grade: 0,
     expected: accepted[0],
     feedback: `Not quite. The answer is: ${accepted[0]}`,
+    diff: diffWords(accepted[0], given, lang),
   };
 }
 
@@ -207,17 +461,78 @@ function gradeTokens(exercise, answer) {
     return { correct: false, grade: 0, feedback: "Nothing selected.", expected: accepted[0].join(" ") };
   }
 
+  // Exact order.
   for (const a of accepted) {
     if (a.length === given.length && a.every((t, i) => normalise(t) === normalise(given[i]))) {
       return { correct: true, grade: 3, expected: a.join(" ") };
     }
   }
 
+  // Build-a-sentence exercises are about word ORDER, so be forgiving about the things that are
+  // not really order mistakes: a typo in a typed word, or two neighbours the wrong way round.
+  let best = null;
+  for (const a of accepted) {
+    const na = a.map((t) => normalise(t));
+    const ng = given.map((t) => normalise(t));
+
+    // Same words, one adjacent pair swapped.
+    if (na.length === ng.length) {
+      const diffs = [];
+      for (let i = 0; i < na.length; i++) if (na[i] !== ng[i]) diffs.push(i);
+      if (diffs.length === 2 && diffs[1] === diffs[0] + 1) {
+        const [i, j] = diffs;
+        if (na[i] === ng[j] && na[j] === ng[i]) {
+          best = {
+            correct: true, grade: 1, expected: a.join(" "), mistake: "word_swap",
+            feedback: `Almost — those two are the other way round: ${a.join(" ")}`,
+          };
+          continue;
+        }
+      }
+
+      // Same length but one word slightly misspelled (possible when typing a token).
+      if (diffs.length === 1) {
+        const i = diffs[0];
+        if (na[i].length >= MIN_TYPO_LENGTH && forgivingWordEdit(na[i], ng[i])) {
+          if (!best) {
+            best = {
+              correct: true, grade: 1, expected: a.join(" "), mistake: "typo",
+              feedback: `Right order — one word is misspelled, it's: ${a.join(" ")}`,
+            };
+          }
+        }
+      }
+    }
+
+    // One missing or extra word, everything else in order.
+    if (Math.abs(na.length - ng.length) === 1 && na.length >= 3) {
+      const shorter = na.length < ng.length ? na : ng;
+      const longer = na.length < ng.length ? ng : na;
+      for (let drop = 0; drop < longer.length; drop++) {
+        const candidate = longer.slice(0, drop).concat(longer.slice(drop + 1));
+        if (candidate.join(" ") === shorter.join(" ")) {
+          if (!best) {
+            best = {
+              correct: true, grade: 1, expected: a.join(" "),
+              mistake: na.length < ng.length ? "extra_word" : "missing_word",
+              feedback: na.length < ng.length
+                ? `Almost — you added a word: ${a.join(" ")}`
+                : `Almost — you dropped a word: ${a.join(" ")}`,
+            };
+          }
+        }
+      }
+    }
+  }
+  if (best) return best;
+
   return {
     correct: false,
     grade: 0,
     expected: accepted[0].join(" "),
     feedback: `Correct order: ${accepted[0].join(" ")}`,
+    // A failed order is most useful as a word-by-word comparison against what was built.
+    diff: diffWords(accepted[0].join(" "), given.join(" ")),
   };
 }
 
@@ -225,11 +540,31 @@ function gradeChoice(exercise, answer) {
   const given = String(answer ?? "").trim();
   const correct = Array.isArray(exercise.answer) ? exercise.answer : [exercise.answer];
   const ok = correct.some((c) => String(c).toLowerCase() === given.toLowerCase());
+  if (ok) {
+    return { correct: true, grade: 3, expected: String(correct[0] ?? ""), feedback: "Correct!" };
+  }
+  // Typing a fill-in-the-blank answer can be a letter off; a chosen tile cannot be.
+  if (exercise.type === "fill_blank") {
+    let best = null;
+    for (const c of correct) {
+      const kind = classifyMistake(String(c), given);
+      if (kind && isForgiven(kind)) {
+        const grade = gradeForMistake(kind);
+        if (!best || grade > best.grade) {
+          best = {
+            correct: true, grade, expected: String(c), mistake: kind,
+            feedback: feedbackForMistake(kind, String(c)),
+          };
+        }
+      }
+    }
+    if (best) return best;
+  }
   return {
-    correct: ok,
-    grade: ok ? 3 : 0,
+    correct: false,
+    grade: 0,
     expected: String(correct[0] ?? ""),
-    feedback: ok ? "Correct!" : `The answer is: ${correct[0]}`,
+    feedback: `The answer is: ${correct[0]}`,
   };
 }
 
@@ -253,39 +588,82 @@ function gradeMatchPairs(exercise, answer) {
 
 /**
  * Speaking is graded on a transcript produced by the client (Web Speech API, or a mocked
- * recogniser in tests). We compare it like a text answer but stay forgiving: speech
- * recognition is noisy, so a close transcript still counts.
+ * recogniser in tests). Speech recognition is noisy, so this is deliberately the most forgiving
+ * grader — but it still uses the same word-level analysis as typing, so "you said a different
+ * word" and "the recogniser dropped a word" are distinguished rather than averaged together.
  */
-function gradeSpeak(exercise, answer, opts) {
+function gradeSpeak(exercise, answer, opts = {}) {
   const transcript = typeof answer === "string" ? answer : answer?.transcript;
-  if (!transcript) {
+  const accepted = acceptedAnswers(exercise);
+  if (!transcript || String(transcript).trim().length === 0) {
     return {
       correct: false,
       grade: 0,
       feedback: "Nothing heard. Check your microphone and try again.",
-      expected: acceptedAnswers(exercise)[0],
+      expected: accepted[0],
     };
   }
-  const accepted = acceptedAnswers(exercise);
-  const given = normalise(transcript);
+  const heard = String(transcript);
+
   for (const a of accepted) {
     const na = normalise(a);
-    if (na === given || stripAccents(na) === stripAccents(given)) {
-      return { correct: true, grade: 3, feedback: "You said it!", heard: transcript };
+    const ng = normalise(heard);
+
+    if (na === ng) {
+      return { correct: true, grade: 3, feedback: "You said it!", heard };
     }
-    // Allow a word or two to be misheard.
-    const words = na.split(" ");
-    const tolerance = Math.max(1, Math.floor(words.length * 0.3));
-    if (editDistance(na, given) <= tolerance) {
-      return { correct: true, grade: 2, feedback: "Good — close enough.", heard: transcript };
+    if (stripAccents(na) === stripAccents(ng)) {
+      return { correct: true, grade: 3, feedback: "You said it!", heard };
+    }
+
+    // Recognisers routinely drop or invent a short function word; that isn't a pronunciation
+    // problem, so treat it as a near miss rather than a failure.
+    const kind = classifyMistake(a, heard, opts.lang);
+    if (kind === "extra_word" || kind === "accents") {
+      return { correct: true, grade: 3, feedback: "You said it!", heard, mistake: kind };
+    }
+    if (kind === "word_swap" || kind === "missing_word" || kind === "typo" ||
+        kind === "typos" || kind === "close") {
+      return { correct: true, grade: 2, feedback: "Good — close enough.", heard, mistake: kind };
+    }
+
+    // Fall back to word-level overlap: if most of the words were recognised, accept it. Speech
+    // recognition on longer sentences is patchy, and punishing that teaches nothing.
+    const want = na.split(" ").filter(Boolean);
+    const got = new Set(ng.split(" ").filter(Boolean));
+    const matched = want.filter((w) => got.has(w) || got.has(stripAccents(w))).length;
+    if (want.length >= 3 && matched / want.length >= 0.7) {
+      return {
+        correct: true, grade: 2, heard, mistake: "close",
+        feedback: `Good — we heard most of it (${matched}/${want.length} words).`,
+      };
+    }
+
+    // Per-word near-match. A recogniser routinely mangles a short word ("agua" -> "aguaa"), and
+    // that is not a pronunciation mistake, so for SPEECH a one-edit difference is accepted on
+    // any word length — unlike typing, where the same latitude would accept a different word.
+    if (want.length === ng.split(" ").filter(Boolean).length && want.length > 0) {
+      const gotTokens = ng.split(" ").filter(Boolean);
+      const closeEnough = want.every((w, i) =>
+        w === gotTokens[i] ||
+        stripAccents(w) === stripAccents(gotTokens[i]) ||
+        editDistanceWithTransposition(w, gotTokens[i]) <= 1);
+      if (closeEnough) {
+        return {
+          correct: true, grade: 2, heard, mistake: "close",
+          feedback: "Good — the recogniser caught most of it.",
+        };
+      }
     }
   }
+
   return {
     correct: false,
     grade: 0,
     expected: accepted[0],
-    heard: transcript,
-    feedback: `We heard "${transcript}". Try the sentence: ${accepted[0]}`,
+    heard,
+    feedback: `We heard "${heard}". Try the sentence: ${accepted[0]}`,
+    diff: diffWords(accepted[0], heard, opts.lang),
   };
 }
 
@@ -339,11 +717,21 @@ export function exercisePlanFor(item, opts = {}) {
   const tokenCount = wordTokens(item.target ?? "").length;
   const alphabetic = /[a-zA-ZÀ-ÿ]/.test(String(item.target ?? ""));
 
-  // Recognition — always available.
+  // Recognition.
   plan.push("select_translation");
   if (hasAudio) plan.push("listen_select");
   if (hasImage) plan.push("select_image");
   if (alphabetic) plan.push("identify_character");
+
+  // Production comes before the construction drills. A session is capped in length and the
+  // picker prefers variety, so anything sitting at the end of the plan is the most likely to be
+  // dropped — and dropping the production exercises is the wrong trade. Speaking in particular
+  // was never selected in an 8-exercise session before this reordering.
+  plan.push("translate");
+  if (hasAudio) {
+    plan.push("listen_type");
+    if (opts.speaking !== false) plan.push("speak");
+  }
 
   // Construction — needs a phrase, not a single word.
   if (tokenCount >= 2) {
@@ -353,13 +741,6 @@ export function exercisePlanFor(item, opts = {}) {
   }
   if (tokenCount >= 3) {
     plan.push("order_words");
-  }
-
-  // Production — always available; dictation and speaking need audio.
-  plan.push("translate");
-  if (hasAudio) {
-    plan.push("listen_type");
-    if (opts.speaking !== false) plan.push("speak");
   }
   return plan;
 }

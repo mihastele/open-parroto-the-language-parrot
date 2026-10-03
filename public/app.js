@@ -5,6 +5,8 @@
    localStorage where it belongs on the client.
    ========================================================================== */
 
+import { Sound } from "./sound.js";
+
 const API = {
   token: localStorage.getItem("parroto.token") || null,
 
@@ -43,6 +45,10 @@ const state = {
   session: null,        // { sessionId, exercise, index, total, hearts }
   pendingNext: null,    // the exercise to show after Continue, held while feedback is up
   feedback: null,
+  hints: [],            // available hint rungs for the current exercise
+  shownHints: [],       // hint steps the learner has revealed on this exercise
+  hintSpent: false,     // a revealing hint was used, so this attempt is no longer clean
+  lastAnswerAt: 0,      // for the speed bonus / rapid-tap guard
   story: null,
   answer: null,         // whatever the current exercise needs
   busy: false,
@@ -384,9 +390,11 @@ async function startSession({ kind, skillId }) {
     state.pendingNext = null;
     state.answer = emptyAnswer(res.exercise);
     state.feedback = null;
+    state.hintText = {};
     state.screen = "lesson";
     render();
     afterRenderForExercise(res.exercise);
+    loadHints(res.exercise);
   } catch (err) {
     handleSessionError(err);
   } finally {
@@ -454,6 +462,56 @@ function emptyAnswer(ex) {
   }
 }
 
+/** Central place so the sound setting is honoured everywhere and audio can fail silently. */
+function play(name, ...args) {
+  if (!state.user?.soundEnabled) return;
+  try { Sound[name]?.(...args); } catch { /* audio is never worth breaking the UI over */ }
+}
+
+/** Loads the hint ladder for the exercise now on screen. Safe to call on every exercise. */
+async function loadHints(ex) {
+  state.hints = [];
+  state.shownHints = [];
+  state.hintSpent = false;
+  state.hintText = {};
+  if (!ex || ex.type === "story" || !state.session?.sessionId) return;
+  try {
+    const res = await API.get(
+      `/api/lessons/${state.session.sessionId}/hints?exerciseId=${encodeURIComponent(ex.id)}`);
+    // Guard against a stale response landing after the learner already moved on.
+    if (state.session?.exercise?.id !== ex.id) return;
+    state.hints = res.hints ?? [];
+    // The fetch is async and finishes after the render that triggered it, so the hint button
+    // would never appear without this second render.
+    if (state.screen === "lesson" && state.hints.length) render();
+  } catch { /* hints are optional; a failure just means no hint button */ }
+}
+
+/** Reveals the next rung of the hint ladder. */
+async function revealHint() {
+  const next = state.hints.find((h) => !state.shownHints.includes(h.step));
+  if (!next || state.busy) return;
+  try {
+    state.busy = true;
+    const res = await API.post(`/api/lessons/${state.session.sessionId}/hint`, {
+      exerciseId: state.session.exercise.id, step: next.step,
+    });
+    state.shownHints.push(next.step);
+    state.hintText = { ...(state.hintText ?? {}), [next.step]: res.hint?.text ?? "" };
+    if (res.spent) state.hintSpent = true;
+    play(next.costsAttempt ? "whoosh" : "tap", false);
+    if (res.hint?.action === "play_slow") {
+      audio.speak(state.session.exercise.answer ?? state.session.exercise.prompt,
+                  state.session.exercise.tts, 0.5);
+    }
+    render();
+  } catch (e) {
+    toast(e.message ?? "Could not load a hint", "warn");
+  } finally {
+    state.busy = false;
+  }
+}
+
 /** True when the current answer value matches the shape this exercise needs. */
 function answerShapeOk(ex) {
   const a = state.answer;
@@ -481,14 +539,47 @@ function lessonScreen() {
         el("div", { class: "progress-fill", style: `width:${progress * 100}%` })),
       heartsRow(s.hearts),
     ),
-    el("div", { class: "small muted", style: "margin-bottom:6px" },
-      `${s.index + 1} / ${s.total}`,
-      ex.isRetry ? el("span", { class: "pill blue", style: "margin-left:8px" }, "🔁 second try") : null,
+    el("div", { class: "row-between", style: "margin-bottom:6px" },
+      el("span", { class: "small muted" },
+        `${s.index + 1} / ${s.total}`,
+        ex.isRetry ? el("span", { class: "pill blue", style: "margin-left:8px" }, "🔁 second try") : null,
+        state.hintSpent ? el("span", { class: "pill", style: "margin-left:8px" }, "💡 hinted") : null,
+      ),
+      // The combo counter is the single biggest driver of "one more go" — make it visible.
+      s.combo > 2 ? el("span", { class: `combo combo-${comboTier(s.combo)}` },
+        "🔥", String(s.combo)) : null,
     ),
     exerciseView(ex),
+    state.feedback ? null : hintBar(ex),
     state.feedback ? null : actionBar(ex),
     state.feedback ? feedbackBar() : null,
   );
+}
+
+/** The hint ladder: one button that reveals successive clues, plus the clues already shown. */
+function hintBar(ex) {
+  const remaining = state.hints.filter((h) => !state.shownHints.includes(h.step));
+  if (state.hints.length === 0 && !state.shownHints.length) return null;
+  const next = remaining[0];
+  const shown = state.hints.filter((h) => state.shownHints.includes(h.step));
+
+  return el("div", { class: "hint-area" },
+    ...shown.map((h) => el("div", { class: "hint-shown" },
+      el("span", { class: "hint-bulb", text: "💡" }),
+      el("span", { class: "grow", text: hintTextFor(h.step) }),
+    )),
+    next
+      ? el("button", {
+          class: "btn btn-ghost hint-btn",
+          onclick: revealHint,
+        }, next.costsAttempt ? "💡 Show the answer" : `💡 ${next.label}`)
+      : null,
+  );
+}
+
+/** Looks up the wording of a revealed step from the loaded ladder. */
+function hintTextFor(step) {
+  return state.hintText?.[step] ?? "";
 }
 
 /** Small setup that must run after the DOM exists (autoplay, focus). */
@@ -556,7 +647,7 @@ function choiceGrid(ex) {
              (state.feedback && state.feedback.expected === c ? " correct" : "") +
              (state.feedback && !state.feedback.correct && state.answer === c ? " wrong" : ""),
       disabled: !!state.feedback,
-      onclick: () => { state.answer = c; render(); },
+      onclick: () => { state.answer = c; play("tap"); render(); },
     }, c)));
 }
 
@@ -600,13 +691,13 @@ function wordBank(ex) {
     ...state.answer.map((tok, i) => el("button", {
       class: "token",
       disabled: !!state.feedback,
-      onclick: () => { state.answer.splice(i, 1); render(); },
+      onclick: () => { state.answer.splice(i, 1); play("tap"); render(); },
     }, tok.text)));
   const bank = el("div", { class: "bank" },
     ...ex.bank.map((word, i) => el("button", {
       class: `token ${used.has(i) ? "used" : ""}`,
       disabled: !!state.feedback,
-      onclick: () => { state.answer.push({ text: word, index: i }); render(); },
+      onclick: () => { state.answer.push({ text: word, index: i }); play("place"); render(); },
     }, word)));
   return el("div", {}, line, bank);
 }
@@ -653,12 +744,14 @@ function pickPair(side, item) {
       a.matched.push({ id: a.selectedLeft });
       a.selectedLeft = null;
       a.selectedRight = null;
+      play("match");
       // Board complete: submit automatically, like the real thing.
       if (a.matched.length >= state.session.exercise.pairs.length) {
         setTimeout(() => submitAnswer(), 220);
       }
     } else {
       a.wrongFlash = [a.selectedLeft, a.selectedRight];
+      play("wrong");
       setTimeout(() => {
         a.wrongFlash = [];
         a.selectedLeft = null;
@@ -750,16 +843,19 @@ function skipExercise(ex) {
 function feedbackBar() {
   const f = state.feedback;
   const isLast = f.finished;
+  const nearMiss = f.correct && f.mistake;   // forgiven: worth pointing out what slipped
   return el("div", { class: `feedback ${f.correct ? "correct" : "wrong"}` },
     el("div", { class: "inner" },
       el("div", { class: "row-between" },
         el("div", { style: "flex:1" },
-          el("h3", {}, f.correct ? "✅ " : "❌ ", f.correct ? pickPraise() : "Not quite"),
+          el("h3", {}, f.correct ? "✅ " : "❌ ", f.correct ? (nearMiss ? "Close enough!" : pickPraise()) : "Not quite"),
           el("div", { class: "small", text: f.feedback }),
           f.expected && !f.correct
             ? el("div", { class: "small", style: "margin-top:4px" },
                 "Correct answer: ", el("strong", { text: f.expected }))
             : null,
+          // Show word-by-word where it went wrong — much more useful than a bare "wrong".
+          f.diff && !f.correct ? wordDiff(f.diff) : null,
         ),
         el("button", {
           class: `btn ${f.correct ? "btn-primary" : "btn-danger"}`,
@@ -768,6 +864,19 @@ function feedbackBar() {
       ),
     ),
   );
+}
+
+/** Renders the word-level diff: right words dimmed, wrong ones struck through, extras marked. */
+function wordDiff(diff) {
+  const parts = [];
+  for (const d of diff) {
+    if (d.status === "ok") continue;                 // no need to show what was right
+    const label = d.status === "missing" ? d.expected : (d.given ?? d.expected);
+    if (!label) continue;
+    parts.push(el("span", { class: d.status, text: label }));
+  }
+  if (parts.length === 0) return null;
+  return el("div", { class: "diff-words" }, ...parts);
 }
 
 let praiseIndex = 0;
@@ -819,7 +928,19 @@ async function submitAnswer() {
     // The pending answer belongs to the exercise that is coming next, so reset it to that
     // type's shape now — otherwise the next render draws against the old value and throws.
     if (res.next) state.answer = emptyAnswer(res.next);
+
+    // Sound makes the difference between "I answered" and "that felt good".
+    if (res.result.correct) {
+      if (!state.hintSpent) play("correct", res.combo);
+    } else {
+      play("wrong");
+    }
+
     render();
+
+    // Load the next question's hints while the learner reads the feedback, so the hint button is
+    // ready the moment they hit Continue.
+    if (res.next) loadHints(res.next);
   } catch (err) {
     // Any unexpected desync: resynchronise the session rather than leaving the UI stuck.
     if (err.code === "out_of_sync" || err.code === "no_exercise") {
@@ -872,27 +993,51 @@ function nextExercise() {
   }
   // The next exercise is a different type, so the pending answer must match its shape.
   state.answer = emptyAnswer(state.session.exercise);
+  state.hintText = {};
   render();
   afterRenderForExercise(state.session.exercise);
+  loadHints(state.session.exercise);
 }
 
 function showResults(summary) {
   state.session = null;
   state.pendingNext = null;
+  state.hints = [];
+  state.shownHints = [];
+  state.hintText = {};
+  state.hintSpent = false;
   state.feedback = null;
   if (!summary) { state.screen = "learn"; return loadScreen(); }
+
+  // Celebration scales with the result: perfect > passed > out of hearts.
+  if (summary.passed && summary.mistakes === 0) play("perfect");
+  else if (summary.passed) play("complete");
+  else if (summary.outOfHearts) play("fail");
+
+  const bits = [];
+  if (summary.passed) {
+    bits.push(`+${summary.xp} XP`, `${summary.accuracy}% correct`);
+    if (summary.streakIncreased) bits.push(`🔥 ${summary.streak} day streak`);
+  } else {
+    bits.push(`You answered ${summary.correct} of ${summary.answered} correctly.`);
+    bits.push("Practice is free — give it another go.");
+  }
+  if (summary.skillUp?.unlocked) bits.push(`Unlocked ${summary.skillUp.unlocked.title}!`);
+
   showDialog({
-    emoji: summary.passed ? "🎉" : summary.outOfHearts ? "💔" : "😅",
-    title: summary.passed ? "Lesson complete!" : summary.outOfHearts ? "Out of hearts" : "Not quite",
-    body: summary.passed
-      ? `+${summary.xp} XP · ${summary.accuracy}% correct` +
-        (summary.streakIncreased ? ` · 🔥 ${summary.streak} day streak` : "") +
-        (summary.skillUp?.unlocked ? ` · Unlocked ${summary.skillUp.unlocked.title}!` : "")
-      : `You answered ${summary.correct} of ${summary.answered} correctly. Practice is free — give it another go.`,
-    extra: summary.achievements?.length
-      ? el("div", { class: "col", style: "margin-top:12px" },
-          ...summary.achievements.map((a) => el("div", { class: "pill gold" }, "🏅", a.label, " unlocked!")))
-      : null,
+    emoji: summary.passed ? (summary.mistakes === 0 ? "🏆" : "🎉") : summary.outOfHearts ? "💔" : "😅",
+    title: summary.passed
+      ? (summary.mistakes === 0 ? "Flawless!" : "Lesson complete!")
+      : summary.outOfHearts ? "Out of hearts" : "Not quite",
+    body: bits.join(" · "),
+    extra: el("div", { class: "col", style: "margin-top:12px;align-items:center" },
+      summary.achievements?.length
+        ? el("div", { class: "col", style: "align-items:center" },
+            ...summary.achievements.map((a) => el("div", { class: "pill gold" }, "🏅", a.label, " unlocked!")))
+        : null,
+      summary.skillUp && summary.skillUp.level ? el("div", { class: "pill blue" },
+        "⛰️", `Level ${summary.skillUp.level} of ${summary.skillUp.maxLevel}`) : null,
+    ),
     actions: [{ label: "Continue", kind: "primary", onclick: () => { closeDialog(); state.screen = "learn"; loadScreen(); } }],
   });
 }
@@ -1012,7 +1157,13 @@ function profileScreen() {
         style: "width:110px",
         onchange: async (e) => { await saveSettings({ dailyGoal: Number(e.target.value) }); },
       })),
-      settingRow("Sound", toggle(u.soundEnabled, (v) => saveSettings({ soundEnabled: v }))),
+      settingRow("Sound", toggle(u.soundEnabled, (v) => { saveSettings({ soundEnabled: v }); if (v) play("reward"); })),
+      settingRow("Sound effects", toggle(Sound.enabled, (v) => {
+        Sound.setEnabled(v);
+        localStorage.setItem("parroto.sfx", v ? "1" : "0");
+        render();
+        if (v) play("correct", 3);
+      })),
       settingRow("Speaking exercises", toggle(u.speakingEnabled, (v) => saveSettings({ speakingEnabled: v }))),
       settingRow("Show me on the leaderboard", toggle(u.leaderboardOptin, (v) => saveSettings({ leaderboardOptin: v }))),
     ),
@@ -1311,6 +1462,15 @@ window.addEventListener("keydown", (e) => {
     render();
   }
 });
+
+// Restore the client-side sound preference before anything renders.
+if (localStorage.getItem("parroto.sfx") === "0") Sound.setEnabled(false);
+
+// Sound needs a user gesture before the browser will play anything. Unlock on the first
+// interaction of any kind, then forget about it.
+for (const ev of ["pointerdown", "keydown", "touchstart"]) {
+  window.addEventListener(ev, () => Sound.unlock(), { once: true, passive: true });
+}
 
 // Speech voices load asynchronously in most browsers; warm them up early.
 if ("speechSynthesis" in window) window.speechSynthesis.getVoices();

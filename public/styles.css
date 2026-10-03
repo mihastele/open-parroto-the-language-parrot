@@ -398,3 +398,72 @@ p { line-height: 1.55; margin: 6px 0; }
   border-radius: 50%; animation: spin .7s linear infinite; margin: 40px auto;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ------------------------------------------------------------------ hints */
+
+.hint-area { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; }
+
+.hint-btn {
+  align-self: flex-start; font-size: 14px; padding: 9px 16px;
+}
+
+.hint-shown {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 11px 14px;
+  border-radius: 12px;
+  border-left: 4px solid var(--gold);
+  background: color-mix(in srgb, var(--gold) 14%, var(--card));
+  font-size: 15px;
+  font-weight: 600;
+  animation: fade .18s;
+}
+.hint-bulb { flex: none; }
+
+/* ------------------------------------------------------------------ combo */
+
+.combo {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 11px; border-radius: 999px;
+  font-weight: 900; font-size: 13px;
+  background: color-mix(in srgb, #ff9600 18%, var(--card));
+  border: 2px solid #ff9600;
+  color: #c96f00;
+  animation: pop .22s;
+}
+@media (prefers-color-scheme: dark) { .combo { color: #ffb64d; } }
+.combo-2 { border-color: #ff9600; }
+.combo-3 { background: color-mix(in srgb, var(--gold) 24%, var(--card)); border-color: var(--gold); color: #8a6a00; transform: scale(1.06); }
+.combo-4 { background: color-mix(in srgb, var(--red) 20%, var(--card)); border-color: var(--red); color: var(--red); transform: scale(1.12); }
+@keyframes pop { from { transform: scale(.7); } to { transform: none; } }
+
+/* ------------------------------------------------------------- word diff */
+
+.diff-words { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.diff-words span {
+  padding: 2px 7px; border-radius: 6px; font-weight: 700; font-size: 14px;
+}
+.diff-words .ok { color: var(--muted); }
+.diff-words .wrong { background: color-mix(in srgb, var(--red) 22%, transparent); color: var(--red-dark);
+  text-decoration: line-through; }
+.diff-words .missing { background: color-mix(in srgb, var(--gold) 24%, transparent); }
+.diff-words .extra { background: color-mix(in srgb, var(--purple) 22%, transparent); text-decoration: line-through; }
+
+/* ------------------------------------------------------- progress & motion */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+/* Bigger, easier tap targets on touch devices — most learners are on a phone or tablet. */
+@media (pointer: coarse) {
+  .choice, .token, .pair-item, .skill-node { min-height: 52px; }
+  .btn { padding: 15px 22px; }
+  .pair-item { font-size: 16px; padding: 15px 12px; }
+}
+
+/* Keep the action bar reachable without scrolling on a short screen. */
+.lesson-actions {
+  position: sticky; bottom: 0;
+  padding: 12px 0 max(12px, env(safe-area-inset-bottom));
+  background: linear-gradient(to top, var(--bg) 70%, transparent);
+}

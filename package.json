@@ -13,6 +13,8 @@
     "doctor": "node bin/parroto.mjs --doctor",
     "seed": "node tools/seed.mjs",
     "validate": "node tools/validate-content.mjs",
+    "audit": "node tools/audit-features.mjs",
+    "verify:grading": "node tools/verify-forgiving.mjs",
     "test": "node bin/run-tests.mjs",
     "reset": "node tools/seed.mjs --reset"
   },

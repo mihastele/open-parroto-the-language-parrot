@@ -331,24 +331,64 @@ export function buildLesson(items, opts = {}) {
   // Prefer variety: pick greedily so a session shows as many *different* exercise types as
   // possible, rather than eight variants of the same two drills. Each type is still capped so
   // a session is not all multiple-choice.
-  const maxPerType = Math.max(2, Math.ceil(size / 3));
+  //
+  // Exercises are grouped by type first, so one item's eight planned variants cannot crowd out
+  // the other types — which is what used to happen and left speaking out of every session.
+  const maxPerType = Math.max(1, Math.floor(size / 4));
+  const byType = new Map();
+  for (const ex of interleaved) {
+    if (!byType.has(ex.type)) byType.set(ex.type, []);
+    byType.get(ex.type).push(ex);
+  }
+
   const chosen = [];
   const perType = new Map();
-  const remaining = [...interleaved];
-  while (chosen.length < size && remaining.length) {
-    // Choose the candidate whose type is currently least represented.
-    let bestIdx = -1;
-    let bestCount = Infinity;
-    for (let i = 0; i < remaining.length; i++) {
-      const used = perType.get(remaining[i].type) ?? 0;
-      if (used >= maxPerType) continue;
-      if (used < bestCount) { bestCount = used; bestIdx = i; }
+  let pass = 0;
+  while (chosen.length < size) {
+    let added = false;
+    for (const [type, bucket] of byType) {
+      if (chosen.length >= size) break;
+      if ((perType.get(type) ?? 0) >= maxPerType) continue;
+      const next = bucket[pass];
+      if (!next) continue;
+      perType.set(type, (perType.get(type) ?? 0) + 1);
+      chosen.push(next);
+      added = true;
     }
-    if (bestIdx < 0) break;   // every remaining type has hit its cap
-    const [picked] = remaining.splice(bestIdx, 1);
-    perType.set(picked.type, (perType.get(picked.type) ?? 0) + 1);
-    chosen.push(picked);
+    if (!added) break;
+    pass++;
   }
+
+  // A production exercise must always make the cut: speaking and free writing are the point of
+  // the app, and a session of pure recognition drills is a worse lesson.
+  const priorities = ["speak", "translate"];
+  for (const type of priorities) {
+    if (chosen.some((e) => e.type === type)) continue;
+    const bucket = byType.get(type);
+    if (!bucket) continue;
+    const candidate = bucket.find((e) => !chosen.includes(e));
+    if (!candidate) continue;
+    // Swap out the last duplicated type to keep the session length and variety.
+    const counts = new Map();
+    for (const e of chosen) counts.set(e.type, (counts.get(e.type) ?? 0) + 1);
+    let victimIdx = -1;
+    for (let i = chosen.length - 1; i >= 0; i--) {
+      if ((counts.get(chosen[i].type) ?? 0) > 1) { victimIdx = i; break; }
+    }
+    if (victimIdx >= 0) {
+      chosen[victimIdx] = candidate;
+    } else if (chosen.length < size + 1) {
+      chosen.push(candidate);
+    }
+  }
+
+  // Back into a sensible order: recognition first, production last, so the session ramps up.
+  const order = ["select_image", "select_translation", "listen_select", "identify_character",
+                 "word_bank", "fill_blank", "order_words", "match_pairs",
+                 "listen_type", "translate", "speak"];
+  const rank = (t) => { const i = order.indexOf(t); return i < 0 ? order.length : i; };
+  chosen.sort((a, b) => rank(a.type) - rank(b.type) || a.order - b.order);
+
   return chosen.slice(0, size).map((ex, i) => ({ ...ex, order: i }));
 }
 

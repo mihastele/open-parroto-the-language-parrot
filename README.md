@@ -84,9 +84,43 @@ All thirteen, generated automatically from vocabulary — you author words, not 
 Grading is deliberately human, matching how the real product behaves:
 
 - Missing accents still counts as correct — but scores lower.
-- A single-character typo in one word is forgiven.
-- Speech recognition is tolerated at roughly 30% word error.
+- **A nearby word swapped** ("quiero yo agua" for "yo quiero agua") is accepted as a near miss.
+- **A typo** is forgiven, with the correction shown: transpositions always, and one inserted or
+  dropped letter on an ordinary-length word.
+- **A stray or missing article** ("quiero agua" for "yo quiero agua") is accepted.
+- Speech recognition is tolerated at roughly 30% word error, and a recogniser mangling a short
+  word is never held against the learner.
 - Practice sessions cost no hearts; lessons and stories do.
+
+Forgiveness is bounded on purpose. A **substitution** on a short word is *not* accepted — that is
+exactly how "gato" becomes "pato", and accepting it would teach the wrong vocabulary. Dropping a
+negation (`no`, `nicht`, `inte`) always fails. Every typo rule has a matching rejection test.
+
+### Help that teaches, not just reveals
+
+Every exercise has a **hint ladder** that starts gentle and ends with the answer:
+
+| Rung | Translate | Word bank | Multiple choice |
+|---|---|---|---|
+| 1 | How many words | How many tiles | Remove a wrong option |
+| 2 | Show the article | Show the first word | Remove another |
+| 3 | Show first letters | Show the order | Show the answer |
+
+The answer is only ever in the last rung, and taking it marks the attempt as hinted — you still
+get credit, but the combo breaks, so the "perfect lesson" achievement stays meaningful. Hints are
+served by the server, so the answer never reaches the browser until you ask for it.
+
+### Sound
+
+All audio is **synthesised in the browser** with the Web Audio API — no mp3s, nothing to
+download, works offline. Correct answers climb in pitch as your combo grows; a perfect lesson
+gets a longer fanfare than a merely passed one. Two independent toggles (server setting plus a
+local sound-effects switch) and everything fails silently if the browser blocks audio.
+
+### Feedback that shows where you went wrong
+
+A wrong answer isn't just "Not quite" — it renders a **word-by-word diff** with the words you got
+wrong struck through, so you can see the mistake instead of decoding it from a sentence.
 
 ## Courses
 
@@ -116,11 +150,15 @@ every exercise type, the SRS schedule, the course path and the stories pick it u
 npm test
 ```
 
-**119 tests, no network, no browser, no fixtures** — an in-memory SQLite database per test.
+**168 tests, no network, no browser, no fixtures** — an in-memory SQLite database per test.
 Verified passing on both Node 22.12 (with the flag, added automatically) and Node 26.
 
 - `tests/core.test.mjs` — grading of every exercise type, the SRS scheduler, streak/heart
   arithmetic, exercise generation, and content validation.
+- `tests/forgiving.test.mjs` — the typo/word-swap tolerance, in both directions: every accepted
+  mistake has a matching rejected one, in all six languages' spelling.
+- `tests/hints.test.mjs` — the hint ladder: the answer is only in the last rung, choices eliminate
+  rather than reveal, and every generated exercise in every course has a usable ladder.
 - `tests/service.test.mjs` — the real service: register → enrol → play a lesson → level a
   skill → unlock the next one. Includes a full course completed end to end.
 - `tests/http.test.mjs` — real HTTP against a real socket: auth, routing, error codes, and a
@@ -128,14 +166,26 @@ Verified passing on both Node 22.12 (with the flag, added automatically) and Nod
 - `tests/preflight.test.mjs` — the Node-compatibility launcher: it must detect a Node that needs
   `--experimental-sqlite`, never duplicate the flag, and actually bind a port.
 
+Two audit tools back the tests up:
+
+```bash
+npm run audit           # does every course really offer every feature?
+npm run verify:grading  # does a typo survive a real session end to end?
+```
+
+`npm run audit` answers the "is it actually wired up?" question per course: exercise types
+reachable (11/11), speaking served in a real session, hints on every exercise, and typo tolerance
+in that language. It exists because a feature can be fully implemented, fully unit-tested, and
+still never appear — speaking was, until the audit caught it.
+
 Three tests exist specifically because they caught real bugs:
 
 - *answers are never leaked to the client* — a `correct` flag was shipping to the browser,
   handing the answer to anyone who opened devtools.
 - *failing everything still ends the session* — a failed retry was re-queued as another retry,
   so an all-wrong session could never terminate.
-- *answers are never leaked* / *a retry is presented as the exercise it really is* — the retry
-  wrapper type had no client view, so any lesson containing a retry became unrenderable.
+- *the next exercise is held until Continue* — the following question rendered behind the
+  feedback bar, and the progress counter jumped a question ahead.
 
 ## Layout
 
@@ -146,6 +196,7 @@ bin/
 src/
   preflight.mjs          node:sqlite capability detection
   core/exercises.mjs     exercise types + grading (pure, no I/O)
+  core/hints.mjs         the hint ladder (pure)
   core/srs.mjs           SM-2 spaced repetition scheduler (pure)
   core/gamification.mjs  XP, streaks, hearts, leagues, quests, achievements (pure)
   core/generator.mjs     vocabulary item → every exercise type
@@ -154,16 +205,18 @@ src/
   service.mjs            business logic over the database
   server.mjs             HTTP router + static files
 public/
-  index.html  app.js  styles.css      the client, no build step
-tests/                 108 tests
+  index.html  app.js  sound.js  styles.css      the client, no build step
+tests/                 168 tests
 tools/
   seed.mjs               create a demo account with progress
   validate-content.mjs   check every course for structural problems
+  audit-features.mjs     prove every course offers every feature
+  verify-forgiving.mjs   prove typo tolerance survives a real session
 ```
 
 The layering matters: `core/` is pure functions with no database, no HTTP and no DOM, which is
-why grading and scheduling are cheap to test exhaustively. `service.mjs` holds every rule that
-needs the database. `server.mjs` is a thin router that delegates.
+why grading, hints and scheduling are cheap to test exhaustively. `service.mjs` holds every rule
+that needs the database. `server.mjs` is a thin router that delegates.
 
 ## API
 
@@ -190,10 +243,11 @@ curl -s localhost:5175/api/lessons/$SESSION/answer -H "authorization: Bearer $TO
 | `GET`/`PATCH` | `/api/me` | Profile and settings |
 | `GET` | `/api/home` | Everything the home screen needs, in one call |
 | `GET` | `/api/courses`, `/api/courses/:id` | The course tree with crowns and unlock state |
-| `POST` | `/api/courses/:id/enrol` | Start a course |
+| `POST` | `/api/courses/:id/enrol`, `/:id/switch` | Start a course; make one the active course |
 | `POST` | `/api/lessons` | Start a lesson, practice, review or story |
 | `POST` | `/api/lessons/:id/answer` | Grade one answer, get the next exercise |
 | `GET` | `/api/lessons/:id/exercise` | Which exercise to show now (desync recovery) |
+| `GET`/`POST` | `/api/lessons/:id/hints`, `/:id/hint` | Preview the hint ladder; serve one rung |
 | `GET` | `/api/quests`, `/api/achievements`, `/api/leaderboard`, `/api/stats` | Meta screens |
 | `POST` | `/api/quests/:id/claim`, `/api/shop/hearts`, `/api/shop/streak-freeze` | Rewards and shop |
 

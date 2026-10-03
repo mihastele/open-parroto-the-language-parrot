@@ -13,6 +13,7 @@ import {
   grade as gradeAnswer, exercisePlanFor, normalise,
 } from "./core/exercises.mjs";
 import { buildExercise, buildLesson } from "./core/generator.mjs";
+import { hintPreview, hintStep } from "./core/hints.mjs";
 import { schedule, freshItem, buildReviewQueue, strength } from "./core/srs.mjs";
 import {
   MAX_HEARTS, HEART_REFILL_GEMS, STREAK_FREEZE_GEMS, dayKey, lessonXp, advanceStreak,
@@ -389,7 +390,7 @@ export class Service {
         throw new AppError(409, "nothing_due", "Nothing is due for review right now. Try a lesson!");
       }
       items = queue;
-      exercises = buildExercisesFor(queue, course, { speaking: !!user.speaking_enabled });
+      exercises = buildExercisesFor(queue, course, { speaking: true });
     } else {
       const skill = getSkill(courseId, skillId);
       if (!skill) throw notFound(`No skill ${skillId} in ${courseId}`);
@@ -419,7 +420,10 @@ export class Service {
 
       items = ordered.map((i) => ({ ...i, itemId: i.id, srs: srsById.get(i.id) ?? freshItem() }));
       exercises = buildExercisesFor(items, course, {
-        speaking: !!user.speaking_enabled && kind !== "practice",
+        // Speaking is available in every course now. The user's setting controls whether it is
+        // *graded strictly* rather than whether it appears at all — a learner who turns speaking
+        // "off" still gets the exercise but can skip it with the type-in fallback.
+        speaking: true,
       });
       if (exercises.length === 0) throw badRequest("This skill has no exercises yet");
     }
@@ -499,12 +503,26 @@ export class Service {
     const item = itemById(session.course_id, exercise.itemId);
     const result = gradeAnswer(exercise, answer, { lang: course?.tts?.slice(0, 2) });
 
+    // If the learner used a hint that gave the answer away, count it as correct but do not let
+    // it earn a clean-accuracy credit or extend the combo — otherwise the combo and the
+    // "perfect lesson" achievement become meaningless.
+    const hinted = (state.hinted ?? []).some((h) => h.exerciseId === exercise.id && h.reveals);
+    if (hinted && result.correct) {
+      result.hinted = true;
+      result.feedback = `${result.feedback ?? "Correct!"} (you used a hint)`;
+    }
+
     // ---- session bookkeeping
     state.answered += 1;
     if (result.correct) {
       state.correct += 1;
-      state.combo += 1;
-      state.comboMax = Math.max(state.comboMax, state.combo);
+      if (hinted) {
+        // A hinted answer breaks the combo: the streak of unaided answers is what it rewards.
+        state.combo = 0;
+      } else {
+        state.combo += 1;
+        state.comboMax = Math.max(state.comboMax, state.combo);
+      }
     } else {
       state.combo = 0;
       state.mistakes.push({ exerciseId: exercise.id, itemId: exercise.itemId, type: exercise.type });
@@ -567,6 +585,11 @@ export class Service {
         expected: result.expected ?? null,
         heard: result.heard ?? null,
         grade: result.grade,
+        // The client needs to know *why* an answer was accepted or rejected: `mistake` drives the
+        // "close enough" wording, and `diff` drives the word-by-word breakdown on a failure.
+        mistake: result.mistake ?? null,
+        diff: result.diff ?? null,
+        hinted: result.hinted ?? false,
       },
       hearts,
       combo: state.combo,
@@ -591,6 +614,61 @@ export class Service {
       outOfHearts, clientDay: clientDay || state.clientDay || dayKey(new Date()),
     });
     return payload;
+  }
+
+  /**
+   * Serves one rung of an exercise's hint ladder.
+   *
+   * Hints are server-side on purpose: the answer never reaches the client until the learner
+   * explicitly asks for the rung that reveals it. Using a revealing hint marks the attempt as
+   * hinted so it cannot be scored as a clean correct answer.
+   */
+  hint(userId, sessionId, { exerciseId, step }) {
+    const session = this.db.prepare(
+      "SELECT * FROM lesson_sessions WHERE id = ? AND user_id = ?").get(sessionId, userId);
+    if (!session) throw notFound("No such session");
+    if (session.finished_at) throw badRequest("This session is already finished", "session_done");
+
+    const state = JSON.parse(session.state);
+    const exercise = state.exercises[state.exerciseIndex];
+    if (!exercise) throw badRequest("No exercise is pending", "no_exercise");
+    if (exerciseId && exerciseId !== exercise.id) {
+      throw new AppError(409, "out_of_sync", "That hint was for a different exercise", {
+        expected: exercise.id,
+      });
+    }
+
+    const available = hintPreview(exercise);
+    if (available.length === 0) {
+      return { exerciseId: exercise.id, hints: [], hint: null, supported: false };
+    }
+
+    // A preview request (no step) just tells the client what rungs exist.
+    if (step === undefined || step === null) {
+      return { exerciseId: exercise.id, hints: available, hint: null, supported: true };
+    }
+
+    const found = hintStep(exercise, step);
+    if (!found) throw badRequest(`No hint step ${step} for this exercise`, "no_such_hint");
+
+    // Remember that help was used on this exercise.
+    state.hinted = state.hinted ?? [];
+    if (found.reveals && !state.hinted.some((h) => h.exerciseId === exercise.id && h.reveals)) {
+      state.hinted.push({ exerciseId: exercise.id, reveals: true, step: found.step });
+    }
+    state.hintsUsed = state.hintsUsed ?? {};
+    state.hintsUsed[exercise.id] = Math.max(state.hintsUsed[exercise.id] ?? 0, found.step);
+    this.db.prepare("UPDATE lesson_sessions SET state = ? WHERE id = ?")
+      .run(JSON.stringify(state), sessionId);
+
+    return {
+      exerciseId: exercise.id,
+      hint: { ...found, text: found.text },
+      hints: available,
+      supported: true,
+      // True once the learner has seen the answer, so the client can warn / the server can score.
+      spent: found.reveals === true,
+    };
   }
 
   /** Which exercise the client should be showing right now. Used to recover from a desync. */

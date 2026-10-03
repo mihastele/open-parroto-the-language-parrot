@@ -62,9 +62,15 @@ test("translate grades exact, accent-only and one-typo answers", () => {
   assert.equal(noAccents.correct, true, "missing accents still count");
   assert.equal(noAccents.grade, 2, "but score lower");
 
-  const typo = grade(ex, "cómi estás");
-  assert.equal(typo.correct, true);
+  // A transposed pair inside a word is always forgiven ("quiero" -> "queiro").
+  const typo = grade({ type: "translate", answer: "quiero agua", accepted: ["quiero agua"] },
+                     "queiro agua");
+  assert.equal(typo.correct, true, "a transposition is a safe typo");
   assert.equal(typo.grade, 1, "a single typo scores lower than exact");
+
+  // A substitution on a short word is NOT forgiven — that is how you get a different word.
+  assert.equal(grade(ex, "cómi estás").correct, false,
+    "substituting a letter in a 4-letter word is not safely distinguishable from a typo");
 
   // Two differences (accent + extra letter) is not a single typo.
   assert.equal(grade(ex, "cómo estass").correct, false, "two mistakes is a wrong answer");
@@ -81,10 +87,18 @@ test("translate rejects an empty answer without crashing", () => {
   assert.equal(r.grade, 0);
 });
 
-test("word_bank accepts a correct order and rejects a wrong one", () => {
+test("word_bank accepts a correct order, forgives a swap, rejects a real scramble", () => {
   const ex = { type: "word_bank", answer: ["yo", "quiero", "agua"], accepted: [["yo", "quiero", "agua"]] };
-  assert.equal(grade(ex, ["yo", "quiero", "agua"]).correct, true);
-  assert.equal(grade(ex, ["quiero", "yo", "agua"]).correct, false);
+  assert.equal(grade(ex, ["yo", "quiero", "agua"]).grade, 3, "exact order is perfect");
+
+  // An adjacent swap is forgiven as a near miss (grade 1), and says so.
+  const swap = grade(ex, ["quiero", "yo", "agua"]);
+  assert.equal(swap.correct, true, "a swapped pair is a near miss, not a failure");
+  assert.equal(swap.grade, 1);
+  assert.equal(swap.mistake, "word_swap");
+
+  // A genuine scramble is still wrong.
+  assert.equal(grade(ex, ["agua", "yo", "quiero"]).correct, false);
   assert.equal(grade(ex, []).correct, false);
 });
 
