@@ -210,8 +210,8 @@ src/
   service.mjs            business logic over the database
   server.mjs             HTTP router + static files
 public/
-  index.html  app.js  sound.js  styles.css      the client, no build step
-tests/                 185 tests
+  index.html  app.js  sound.js  voice.js  styles.css      the client, no build step
+tests/                 189 tests
 tools/
   seed.mjs               create a demo account with progress
   validate-content.mjs   check every course for structural problems
@@ -263,8 +263,9 @@ stripped of their `correct`/`answer` fields server-side, and there is a test ass
 
 ## Notes and limitations
 
-- **Speech** uses the browser's Web Speech API — no audio files ship, and the voice quality is
-  whatever your OS provides. Speaking exercises fall back to typing when unsupported.
+- **Speech** uses the browser's Web Speech API out of the box — no audio files ship, and the
+  voice quality is whatever your OS provides. Speaking exercises fall back to typing when
+  unsupported. For identical audio everywhere, download the local voices (next section).
 - **Images** are emoji, not illustrations. It keeps the app dependency-free, and it means the
   `select_image` exercises work without an asset pipeline.
 - **Stories** exist for Spanish and French only; the other courses ship without them.
@@ -310,3 +311,24 @@ up automatically — no registry edit; confirm with `npm run validate` and
 `npm run audit`. Stories are still authored by hand: add a `STORIES` export to the
 generated file. Pass `--check` to validate a TSV without writing anything, or `--out`
 to write somewhere else (files outside `src/content/courses/` are ignored).
+
+### Local voices (same audio on every device)
+
+The browser's built-in voices differ per OS — the same lesson sounds different on
+Android, iOS and Linux, and some devices have no voice at all. Two pinned, lazy,
+explicitly-downloaded models fix both directions:
+
+- **Hearing — Piper TTS** ([voices](https://huggingface.co/rhasspy/piper-voices), MIT).
+  When a lesson has no system voice, it offers one tap to get the course voice
+  (~60–73 MB, once). From then on that language always speaks with the same voice,
+  including autoplay, and works offline. Web Speech stays the instant fallback.
+- **Speaking — Whisper tiny** (`Xenova/whisper-tiny`, Apache-2.0) via the pinned
+  Transformers.js runtime. Download it once in Profile → Settings (~120 MB); the mic
+  button then transcribes on-device, so audio never leaves the machine. Without it,
+  the browser's recognition (or typing) applies as before.
+
+Nothing downloads silently: every model fetch starts from a tap showing its size,
+voices live in the browser's private file storage and the recogniser in its model
+cache, and both can be removed from Settings. The pins live in `public/voice.js`
+(`PIPER_BUNDLE_URL`, `TRANSFORMERS_URL`, voice IDs, quantisation); every URL there
+returned HTTP 200 when written.

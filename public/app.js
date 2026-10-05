@@ -6,6 +6,7 @@
    ========================================================================== */
 
 import { Sound } from "./sound.js";
+import { Voice, voiceIdFor, resolveSpeech, PIPER_VOICES } from "./voice.js";
 
 const API = {
   token: localStorage.getItem("parroto.token") || null,
@@ -105,9 +106,15 @@ function heartsRow(hearts, max = 5) {
  * so autoplay stays off and only an explicit tap replays with the fallback voice.
  */
 const audio = {
-  speak(text, lang = "es-ES", rate = 0.9) {
-    if (voiceStatus(lang) === "unsupported") { toast("Your browser has no speech support", "warn"); return; }
+  async speak(text, lang = "es-ES", rate = 0.9) {
     if (!state.user?.soundEnabled) return;
+    // A downloaded Piper voice wins: identical pronunciation on every device. Anything
+    // it throws falls through to the browser voice; nothing here may break the lesson.
+    if (Voice.isReady(lang)) {
+      try { await Voice.speakLocal(text, lang, rate); return; }
+      catch { /* fall through to system speech */ }
+    }
+    if (voiceStatus(lang) === "unsupported") { toast("Your browser has no speech support", "warn"); return; }
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.lang = lang;
@@ -117,6 +124,24 @@ const audio = {
     window.speechSynthesis.speak(u);
   },
 };
+
+/**
+ * Downloads the Piper voice for a language after an explicit tap — never silently.
+ * The voice note re-renders away once the voice is ready.
+ */
+async function downloadVoice(lang) {
+  const id = voiceIdFor(lang);
+  if (!id || Voice.isReady(lang) || Voice.isDownloading(lang)) return;
+  const mb = PIPER_VOICES[Voice.langPrefix(lang)]?.mb ?? "?";
+  toast(`Downloading voice (~${mb} MB, once)…`, "");
+  try {
+    await Voice.ensureVoice(lang);
+    render();
+    toast("Voice ready — it works offline from now on", "good");
+  } catch (e) {
+    toast("Could not download the voice — system speech still works", "warn");
+  }
+}
 
 /** Exercise types that cannot be answered without hearing the prompt. */
 function needsAudio(ex) {
@@ -704,16 +729,16 @@ function hintTextFor(step) {
 function afterRenderForExercise(ex) {
   if (!ex) return;
   // Never autoplay into a missing voice: a default voice with the wrong pronunciation
-  // teaches the wrong thing. The voice note explains, and an explicit tap still replays.
+  // teaches the wrong thing. A downloaded Piper voice counts as a voice here, so once
+  // the learner taps Get, autoplay starts working with zero code changes downstream.
   if (ex.type === "listen_select" || ex.type === "listen_type" || ex.type === "identify_character") {
-    const status = voiceStatus(ex.audio?.lang);
-    if (status !== "missing" && status !== "unsupported") {
-      audio.speak(ex.audio?.text ?? ex.answer, ex.audio?.lang, 0.85);
+    const lang = ex.audio?.lang;
+    if (resolveSpeech({ systemStatus: voiceStatus(lang), localReady: Voice.isReady(lang) }) !== "none") {
+      audio.speak(ex.audio?.text ?? ex.answer, lang, 0.85);
     }
   }
   if (ex.type === "speak") {
-    const status = voiceStatus(ex.tts);
-    if (status !== "missing" && status !== "unsupported") {
+    if (resolveSpeech({ systemStatus: voiceStatus(ex.tts), localReady: Voice.isReady(ex.tts) }) !== "none") {
       audio.speak(ex.answer ?? ex.prompt, ex.tts, 0.8);
     }
   }
@@ -777,9 +802,13 @@ function exerciseView(ex) {
 function voiceNote(ex) {
   if (!needsAudio(ex)) return null;
   const lang = ex.audio?.lang ?? ex.tts;
+  // A downloaded Piper voice covers it: nothing to explain, autoplay already works.
+  if (Voice.isReady(lang)) return null;
   const status = voiceStatus(lang);
   if (status !== "missing" && status !== "unsupported") return null;
   const language = state.currentCourse?.to ?? "this language";
+  const downloadable = voiceIdFor(lang);
+  const mb = downloadable ? PIPER_VOICES[Voice.langPrefix(lang)]?.mb ?? "?" : null;
   return el("div", { class: "voice-note" },
     el("span", { text: "🔇" }),
     el("span", { class: "grow" },
@@ -787,6 +816,15 @@ function voiceNote(ex) {
         ? "This browser can't speak — read the prompt instead."
         : `No ${language} voice on this device — read instead.`,
       ex.audio?.text ? el("div", { class: "voice-text", text: `“${ex.audio.text}”` }) : null,
+      downloadable
+        ? Voice.isDownloading(lang)
+          ? el("div", { class: "small muted", text: "Downloading voice…" })
+          : el("button", {
+              class: "btn btn-ghost",
+              style: "margin-top:8px;padding:8px 14px;font-size:13px",
+              onclick: () => downloadVoice(lang),
+            }, `Get the ${language} voice (~${mb} MB, once)`)
+        : null,
     ),
   );
 }
@@ -947,6 +985,19 @@ function speakView(ex) {
       class: "btn btn-blue",
       onclick: async (e) => {
         const btn = e.currentTarget;
+        // Offline recognition first when downloaded: the audio never leaves the device.
+        if (Voice.whisperReady()) {
+          btn.textContent = "🎤 Listening (offline)…";
+          const heard = await Voice.listenOffline(ex.tts).catch(() => null);
+          if (heard) {
+            state.answer = { transcript: heard };
+            render();
+          } else {
+            toast("Didn't catch that — try again or type instead", "warn");
+            btn.textContent = "🎤 Speak";
+          }
+          return;
+        }
         btn.textContent = "🎤 Listening…";
         listenOnce(ex.tts, (transcript) => {
           state.answer = { transcript };
@@ -1399,6 +1450,8 @@ function profileSettings() {
         if (v) play("correct", 3);
       })),
       settingRow("Speaking exercises", toggle(u.speakingEnabled, (v) => saveSettings({ speakingEnabled: v }))),
+      settingRow("Course voice", voiceSettingControl()),
+      settingRow("Offline listening", whisperSettingControl()),
       settingRow("Show me on the leaderboard", toggle(u.leaderboardOptin, (v) => saveSettings({ leaderboardOptin: v }))),
     ),
 
@@ -1513,6 +1566,59 @@ function statCard(icon, value, label) {
 function settingRow(label, control) {
   return el("div", { class: "row-between", style: "padding:6px 0" },
     el("span", { class: "bold", text: label }), control);
+}
+
+/** Course voice state: downloaded (works offline), downloading, or system voice. */
+function voiceSettingControl() {
+  const tts = state.currentCourse?.tts;
+  const id = voiceIdFor(tts);
+  if (!id) return el("span", { class: "small muted", text: "System voice" });
+  const mb = PIPER_VOICES[Voice.langPrefix(tts)]?.mb ?? "?";
+  const mini = "padding:6px 14px;text-transform:none;letter-spacing:0";
+  if (Voice.isReady(tts)) {
+    return el("div", { class: "row", style: "gap:8px" },
+      el("span", { class: "pill green", text: "Downloaded" }),
+      el("button", {
+        class: "btn btn-ghost", style: mini,
+        onclick: async () => { await Voice.removeVoice(tts); render(); toast("Voice removed", "good"); },
+      }, "Remove"));
+  }
+  if (Voice.isDownloading(tts)) return el("span", { class: "small muted", text: "Downloading…" });
+  return el("div", { class: "row", style: "gap:8px" },
+    el("span", { class: "small muted", text: "System voice" }),
+    el("button", {
+      class: "btn btn-ghost", style: mini,
+      onclick: async () => { await downloadVoice(tts); render(); },
+    }, `Get (~${mb} MB)`));
+}
+
+/** Offline speech recognition: one ~120MB download, then the mic never phones home. */
+function whisperSettingControl() {
+  const mini = "padding:6px 14px;text-transform:none;letter-spacing:0";
+  if (Voice.whisperReady()) {
+    return el("div", { class: "row", style: "gap:8px" },
+      el("span", { class: "pill green", text: "Downloaded" }),
+      el("button", {
+        class: "btn btn-ghost", style: mini,
+        onclick: () => { Voice._whisperPipe = null; render(); toast("Offline listening removed", "good"); },
+      }, "Remove"));
+  }
+  if (Voice._whisperBusy) return el("span", { class: "small muted", text: "Downloading…" });
+  return el("div", { class: "row", style: "gap:8px" },
+    el("span", { class: "small muted", text: "Browser service" }),
+    el("button", {
+      class: "btn btn-ghost", style: mini,
+      onclick: async () => {
+        toast("Downloading recognition (~120 MB, once)…", "");
+        try {
+          await Voice.ensureWhisper();
+          render();
+          toast("Offline listening ready", "good");
+        } catch {
+          toast("Could not download — browser listening still works", "warn");
+        }
+      },
+    }, "Get"));
 }
 
 function toggle(on, onChange) {
