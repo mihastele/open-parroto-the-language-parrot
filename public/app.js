@@ -1252,9 +1252,23 @@ function storyScreen() {
 // --------------------------------------------------------------------- profile
 
 function profileScreen() {
-  const u = state.user;
-  const courses = state.meta?.courses ?? [];
+  const tab = state.profileTab ?? "about";
+  const tabs = [["about", "🙂", "About"], ["courses", "🌍", "Courses"], ["settings", "⚙️", "Settings"]];
   return shell(el("div", {},
+    el("div", { class: "segment" },
+      ...tabs.map(([id, icon, label]) => el("button", {
+        class: `segment-btn ${tab === id ? "active" : ""}`,
+        onclick: () => { state.profileTab = id; render(); },
+      }, el("span", { text: icon }), label))),
+    tab === "about" ? profileAbout()
+      : tab === "courses" ? profileCourses()
+      : profileSettings(),
+  ));
+}
+
+function profileAbout() {
+  const u = state.user;
+  return el("div", {},
     el("div", { class: "card" },
       el("div", { class: "row" },
         el("div", { class: "lb-avatar", style: "width:60px;height:60px;font-size:30px", text: "🦜" }),
@@ -1266,11 +1280,16 @@ function profileScreen() {
     ),
 
     el("div", { class: "row", style: "gap:10px;margin-top:12px" },
-      statCard("🔥", u.streak, u.streak === 1 ? "day streak" : "day streak"),
+      statCard("🔥", u.streak, "day streak"),
       statCard("⚡", u.xp, "total XP"),
       statCard("💎", u.gems, "gems"),
       statCard("👑", state.currentCourse?.crowns ?? 0, "crowns"),
     ),
+
+    el("button", {
+      class: "btn btn-ghost btn-wide", style: "margin-top:12px",
+      onclick: buyFreeze,
+    }, `Buy streak freeze (200 💎)`),
 
     el("h2", { text: "Achievements" }),
     el("div", { class: "card" },
@@ -1282,26 +1301,12 @@ function profileScreen() {
         ),
       )),
     ),
+  );
+}
 
-    el("h2", { text: "Settings" }),
-    el("div", { class: "card col" },
-      settingRow("Daily goal (XP)", el("input", {
-        class: "text-input", type: "number", min: 10, max: 200, value: u.dailyGoal,
-        style: "width:110px",
-        onchange: async (e) => { await saveSettings({ dailyGoal: Number(e.target.value) }); },
-      })),
-      settingRow("Sound", toggle(u.soundEnabled, (v) => { saveSettings({ soundEnabled: v }); if (v) play("reward"); })),
-      settingRow("Sound effects", toggle(Sound.enabled, (v) => {
-        Sound.setEnabled(v);
-        localStorage.setItem("parroto.sfx", v ? "1" : "0");
-        render();
-        if (v) play("correct", 3);
-      })),
-      settingRow("Speaking exercises", toggle(u.speakingEnabled, (v) => saveSettings({ speakingEnabled: v }))),
-      settingRow("Show me on the leaderboard", toggle(u.leaderboardOptin, (v) => saveSettings({ leaderboardOptin: v }))),
-    ),
-
-    el("h2", { text: "Courses" }),
+function profileCourses() {
+  const courses = state.meta?.courses ?? [];
+  return el("div", {},
     el("p", { class: "small muted", text: "Tap a course to switch. Progress is kept for each one." }),
     el("div", { class: "card" },
       ...courses.map((c) => {
@@ -1328,17 +1333,36 @@ function profileScreen() {
         );
       }),
     ),
+  );
+}
 
-    el("div", { class: "row", style: "gap:10px;margin-top:16px" },
-      el("button", { class: "btn btn-ghost grow", onclick: buyFreeze }, `Buy streak freeze (200 💎)`),
-      el("button", {
-        class: "btn btn-danger",
-        onclick: async () => { await API.post("/api/logout"); API.setToken(null); location.reload(); },
-      }, "Sign out"),
+function profileSettings() {
+  const u = state.user;
+  return el("div", {},
+    el("div", { class: "card col" },
+      settingRow("Daily goal (XP)", el("input", {
+        class: "text-input", type: "number", min: 10, max: 200, value: u.dailyGoal,
+        style: "width:110px",
+        onchange: async (e) => { await saveSettings({ dailyGoal: Number(e.target.value) }); },
+      })),
+      settingRow("Sound", toggle(u.soundEnabled, (v) => { saveSettings({ soundEnabled: v }); if (v) play("reward"); })),
+      settingRow("Sound effects", toggle(Sound.enabled, (v) => {
+        Sound.setEnabled(v);
+        localStorage.setItem("parroto.sfx", v ? "1" : "0");
+        render();
+        if (v) play("correct", 3);
+      })),
+      settingRow("Speaking exercises", toggle(u.speakingEnabled, (v) => saveSettings({ speakingEnabled: v }))),
+      settingRow("Show me on the leaderboard", toggle(u.leaderboardOptin, (v) => saveSettings({ leaderboardOptin: v }))),
     ),
+
+    el("button", {
+      class: "btn btn-danger btn-wide", style: "margin-top:16px",
+      onclick: async () => { await API.post("/api/logout"); API.setToken(null); location.reload(); },
+    }, "Sign out"),
     el("p", { class: "small muted center", style: "margin-top:20px" },
       "Parroto · learn a language by parroting it back"),
-  ));
+  );
 }
 
 /** Placement test intro: it only ever adds unlocks, so starting is consequence-free. */

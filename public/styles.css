@@ -203,6 +203,20 @@ p { line-height: 1.55; margin: 6px 0; }
 .path-due { margin-bottom: 6px; }
 .tips-body { text-align: left; margin-top: 6px; }
 
+/* Profile sections: one screen, three tabs, no more endless scroll. */
+.segment {
+  display: flex; gap: 4px;
+  background: var(--bg-alt);
+  border-radius: 14px; padding: 4px;
+  margin-bottom: 16px;
+}
+.segment-btn {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 10px 8px; border-radius: 10px;
+  font-weight: 800; font-size: 14px; color: var(--muted);
+}
+.segment-btn.active { background: var(--card); color: var(--ink); box-shadow: var(--shadow); }
+
 /* Honest no-voice state: quiet, neutral, and right where the audio would come from. */
 .voice-note {
   display: flex; gap: 10px; align-items: flex-start;
