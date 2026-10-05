@@ -211,11 +211,12 @@ src/
   server.mjs             HTTP router + static files
 public/
   index.html  app.js  sound.js  voice.js  styles.css      the client, no build step
-tests/                 189 tests
+tests/                 190 tests
 tools/
   seed.mjs               create a demo account with progress
   validate-content.mjs   check every course for structural problems
   import-course.mjs      build a course module from a TSV of vocabulary
+  generate-voices.mjs    pre-synthesize course audio with Piper (deploy step)
   audit-features.mjs     prove every course offers every feature
   verify-forgiving.mjs   prove typo tolerance survives a real session
 ```
@@ -332,3 +333,13 @@ voices live in the browser's private file storage and the recogniser in its mode
 cache, and both can be removed from Settings. The pins live in `public/voice.js`
 (`PIPER_BUNDLE_URL`, `TRANSFORMERS_URL`, voice IDs, quantisation); every URL there
 returned HTTP 200 when written.
+
+### Pre-generated audio (fastest, no downloads for learners)
+
+`npm run voices [-- --course es-en] [--limit 5] [--force]` speaks every vocabulary
+item with the course's Piper voice in headless Chrome and stores MP3 clips plus one
+manifest per course under `public/audio/`. The client plays a clip when its item has
+one, before trying Piper or system speech — instant and identical everywhere, with no
+per-learner download at all. The directory is gitignored (clips are megabytes): run it
+as a deploy step. Options: `--course` for one course, `--limit N` to sample,
+`--force` to regenerate.

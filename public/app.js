@@ -6,7 +6,7 @@
    ========================================================================== */
 
 import { Sound } from "./sound.js";
-import { Voice, voiceIdFor, resolveSpeech, PIPER_VOICES } from "./voice.js";
+import { Voice, StaticAudio, voiceIdFor, resolveSpeech, PIPER_VOICES } from "./voice.js";
 
 const API = {
   token: localStorage.getItem("parroto.token") || null,
@@ -106,8 +106,15 @@ function heartsRow(hearts, max = 5) {
  * so autoplay stays off and only an explicit tap replays with the fallback voice.
  */
 const audio = {
-  async speak(text, lang = "es-ES", rate = 0.9) {
+  async speak(text, lang = "es-ES", rate = 0.9, ref = null) {
     if (!state.user?.soundEnabled) return;
+    // Pre-generated studio clips first: instant and identical everywhere.
+    if (ref?.courseId && ref?.itemId) {
+      try {
+        const url = await StaticAudio.urlFor(ref.courseId, ref.itemId);
+        if (url) { await StaticAudio.play(url, rate); return; }
+      } catch { /* fall through */ }
+    }
     // A downloaded Piper voice wins: identical pronunciation on every device. Anything
     // it throws falls through to the browser voice; nothing here may break the lesson.
     if (Voice.isReady(lang)) {
@@ -630,8 +637,9 @@ async function revealHint() {
     if (res.spent) state.hintSpent = true;
     play(next.costsAttempt ? "whoosh" : "tap", false);
     if (res.hint?.action === "play_slow") {
-      audio.speak(state.session.exercise.answer ?? state.session.exercise.prompt,
-                  state.session.exercise.tts, 0.5);
+      const ex = state.session.exercise;
+      audio.speak(ex.answer ?? ex.prompt, ex.tts, 0.5,
+        { courseId: state.currentCourse?.id, itemId: ex.itemId });
     }
     render();
   } catch (e) {
@@ -734,12 +742,14 @@ function afterRenderForExercise(ex) {
   if (ex.type === "listen_select" || ex.type === "listen_type" || ex.type === "identify_character") {
     const lang = ex.audio?.lang;
     if (resolveSpeech({ systemStatus: voiceStatus(lang), localReady: Voice.isReady(lang) }) !== "none") {
-      audio.speak(ex.audio?.text ?? ex.answer, lang, 0.85);
+      audio.speak(ex.audio?.text ?? ex.answer, lang, 0.85,
+        { courseId: state.currentCourse?.id, itemId: ex.itemId });
     }
   }
   if (ex.type === "speak") {
     if (resolveSpeech({ systemStatus: voiceStatus(ex.tts), localReady: Voice.isReady(ex.tts) }) !== "none") {
-      audio.speak(ex.answer ?? ex.prompt, ex.tts, 0.8);
+      audio.speak(ex.answer ?? ex.prompt, ex.tts, 0.8,
+        { courseId: state.currentCourse?.id, itemId: ex.itemId });
     }
   }
   const input = document.querySelector(".text-input");
@@ -751,7 +761,10 @@ function exerciseView(ex) {
   if (ex.type === "listen_select" || ex.type === "listen_type" || ex.type === "identify_character") {
     head.append(el("button", {
       class: "speak-btn",
-      onclick: (e) => { audio.speak(ex.audio.text, ex.audio.lang, 0.8); e.currentTarget.classList.add("speaking");
+      onclick: (e) => {
+        audio.speak(ex.audio.text, ex.audio.lang, 0.8,
+          { courseId: state.currentCourse?.id, itemId: ex.itemId });
+        e.currentTarget.classList.add("speaking");
                         setTimeout(() => e.currentTarget.classList.remove("speaking"), 900); },
     }, "🔊"));
   }
@@ -1028,7 +1041,8 @@ function speakView(ex) {
             onkeydown: (ev) => { if (ev.key === "Enter") submitAnswer(); },
           }))
       : null,
-    el("button", { class: "btn btn-ghost", onclick: () => audio.speak(ex.answer ?? ex.prompt, ex.tts, 0.8) },
+    el("button", { class: "btn btn-ghost", onclick: () => audio.speak(ex.answer ?? ex.prompt, ex.tts, 0.8,
+      { courseId: state.currentCourse?.id, itemId: ex.itemId }) },
       "🔊 Hear it again"),
   );
 }

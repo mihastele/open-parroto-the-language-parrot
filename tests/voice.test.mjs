@@ -10,6 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   PIPER_VOICES,
+  StaticAudio,
   voiceIdFor,
   whisperLangFor,
   resolveSpeech,
@@ -68,4 +69,27 @@ test("the resampler keeps shape across rates", () => {
   assert.equal(up.length, 4);
   assert.ok(up[0] === 0 && up[3] === 1, "endpoints are exact");
   assert.ok(up[1] > 0 && up[1] < up[2], "interior points interpolate");
+});
+
+test("static clips resolve from the manifest, once, and vanish gracefully", async () => {
+  const realFetch = globalThis.fetch;
+  let fetches = 0;
+  globalThis.fetch = async (url) => {
+    fetches++;
+    if (String(url).endsWith("/audio/es-en.json")) {
+      return { ok: true, json: async () => ({ "es-hola": "audio/es-en/es-hola.mp3" }) };
+    }
+    return { ok: false };
+  };
+  try {
+    StaticAudio._manifestPromises.clear();
+    assert.equal(await StaticAudio.urlFor("es-en", "es-hola"), "/audio/es-en/es-hola.mp3");
+    assert.equal(await StaticAudio.urlFor("es-en", "es-nope"), null, "unknown items fall through");
+    assert.equal(await StaticAudio.urlFor("fr-en", "fr-x"), null, "a missing manifest means no static audio");
+    assert.equal(await StaticAudio.urlFor(null, "es-hola"), null);
+    assert.equal(fetches, 2, "one manifest fetch per course, then cached");
+  } finally {
+    globalThis.fetch = realFetch;
+    StaticAudio._manifestPromises.clear();
+  }
 });

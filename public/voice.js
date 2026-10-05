@@ -77,6 +77,40 @@ export function resampleAudio(samples, fromRate, toRate) {
   return out;
 }
 
+/**
+ * Pre-generated clips from `npm run voices`: /audio/<course>/<itemId>.mp3, indexed by
+ * /audio/<course>.json. Missing manifest means no static audio — every lookup then
+ * falls through to Piper or system speech, so undeployed courses keep working.
+ */
+export const StaticAudio = {
+  _manifestPromises: new Map(),
+
+  manifest(courseId) {
+    if (!courseId) return Promise.resolve(null);
+    if (!this._manifestPromises.has(courseId)) {
+      this._manifestPromises.set(courseId,
+        fetch(`/audio/${courseId}.json`).then((r) => (r.ok ? r.json() : null)).catch(() => null));
+    }
+    return this._manifestPromises.get(courseId);
+  },
+
+  async urlFor(courseId, itemId) {
+    if (!courseId || !itemId) return null;
+    const m = await this.manifest(courseId);
+    return m?.[itemId] ? `/${m[itemId]}` : null;
+  },
+
+  async play(url, rate = 0.9) {
+    const el = new Audio(url);
+    el.playbackRate = rate;
+    await new Promise((resolve, reject) => {
+      el.onended = resolve;
+      el.onerror = () => reject(new Error("static playback failed"));
+      el.play().catch(reject);
+    });
+  },
+};
+
 export const Voice = {
   /** Override in probes: (url) => module. Defaults to a real dynamic import. */
   _importer: (url) => import(url),
