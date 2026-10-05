@@ -849,13 +849,22 @@ function wordBank(ex) {
     ...state.answer.map((tok, i) => el("button", {
       class: "token",
       disabled: !!state.feedback,
-      onclick: () => { state.answer.splice(i, 1); play("tap"); render(); },
+      // render() replaces the DOM and drops focus: land back on the freed bank token.
+      onclick: () => {
+        const freed = tok.index;
+        state.answer.splice(i, 1); play("tap"); render();
+        document.querySelectorAll(".bank .token")[freed]?.focus({ preventScroll: true });
+      },
     }, tok.text)));
   const bank = el("div", { class: "bank" },
     ...ex.bank.map((word, i) => el("button", {
       class: `token ${used.has(i) ? "used" : ""}`,
       disabled: !!state.feedback,
-      onclick: () => { state.answer.push({ text: word, index: i }); play("place"); render(); },
+      // Focus the placed token so keyboard users keep building without tabbing back.
+      onclick: () => {
+        state.answer.push({ text: word, index: i }); play("place"); render();
+        document.querySelector(".answer-line .token:last-child")?.focus({ preventScroll: true });
+      },
     }, word)));
   return el("div", {}, line, bank);
 }
@@ -915,10 +924,20 @@ function pickPair(side, item) {
         a.selectedLeft = null;
         a.selectedRight = null;
         render();
+        focusPair();
       }, 420);
     }
   }
   render();
+  focusPair();
+}
+
+/** After a pairs re-render, focus the selected tile, else the first unmatched one. */
+function focusPair() {
+  const tiles = [...document.querySelectorAll(".pair-item")];
+  const target = tiles.find((b) => b.classList.contains("selected")) ??
+    tiles.find((b) => !b.classList.contains("matched"));
+  target?.focus({ preventScroll: true });
 }
 
 function speakView(ex) {
