@@ -398,48 +398,65 @@ function learnScreen() {
       : null,
 
     el("h3", { text: "Skills" }),
-    ...course.skills.map((s) => skillNode(s, course)),
+    skillPath(course),
   ));
 }
 
-function skillNode(skill, course) {
+/**
+ * The course path: skills as winding nodes instead of a flat list, so progress reads
+ * at a glance. Nodes wind left-right down a centre track; the first unfinished skill
+ * is marked START. Tapping a node opens its dialog (start, practise, tips).
+ */
+function skillPath(course) {
+  const currentId = (course.skills.find((s) => s.unlocked && !s.completed) ?? {}).id ?? null;
+  // Sine-like offsets in an 8-step period; small enough to survive a 360px phone.
+  const offsets = [0, -64, -88, -64, 0, 64, 88, 64];
+  return el("div", { class: "skill-path" },
+    ...course.skills.map((s, i) => {
+      const status = s.completed ? "done" : !s.unlocked ? "locked" : s.id === currentId ? "current" : "todo";
+      return el("div", { class: "path-step", style: `transform:translateX(${offsets[i % offsets.length]}px)` },
+        s.id === currentId ? el("span", { class: "pill green path-start", text: "▶ START" }) : null,
+        s.unlocked && s.dueCount > 0
+          ? el("span", { class: "pill blue path-due" }, String(s.dueCount), " due")
+          : null,
+        el("button", {
+          class: `path-node ${status}`,
+          onclick: () => {
+            if (!s.unlocked) return toast("Finish the previous skill first", "warn");
+            openSkillDialog(s);
+          },
+        }, el("span", { text: s.unlocked ? iconFor(s.icon) : "🔒" })),
+        el("div", { class: "path-title", text: s.title }),
+      );
+    }),
+  );
+}
+
+/** What a path node opens: progress, start, free practise, and grammar tips. */
+function openSkillDialog(skill) {
   const crowns = [...Array(skill.maxLevel)].map((_, i) =>
     el("span", { style: i < skill.level ? "color:var(--gold)" : "color:var(--line)" }, "★"));
-
-  // A div row, not one big button: the tips button nested inside a button would be invalid
-  // HTML and unreachable to assistive tech. The main area still starts the lesson.
-  return el("div", {
-    class: `skill-node ${skill.unlocked ? "unlocked" : "locked"} ${skill.completed ? "completed" : ""}`,
-  },
-    el("button", {
-      class: "skill-main grow",
-      disabled: !skill.unlocked,
-      onclick: () => {
-        if (!skill.unlocked) return toast("Finish the previous skill first", "warn");
-        startSession({ kind: "lesson", skillId: skill.id });
+  showDialog({
+    emoji: iconFor(skill.icon),
+    title: skill.title,
+    body: skill.completed ? `Mastered · ${skill.itemCount} words`
+      : `Level ${skill.level + 1} of ${skill.maxLevel} · ${skill.learned}/${skill.itemCount} words seen`,
+    extra: el("div", { class: "col", style: "align-items:center" },
+      el("div", { class: "crowns", style: "font-size:18px" }, ...crowns)),
+    actions: [
+      {
+        label: skill.completed ? "Play again" : "Start lesson", kind: "primary",
+        onclick: () => { closeDialog(); startSession({ kind: "lesson", skillId: skill.id }); },
       },
-    },
-      el("span", { class: "badge", text: skill.unlocked ? iconFor(skill.icon) : "🔒" }),
-      el("span", { class: "grow" },
-        el("div", { class: "bold", text: skill.title }),
-        el("div", { class: "small muted" },
-          !skill.unlocked ? "Locked"
-            : skill.completed ? `Mastered · ${skill.itemCount} words`
-            : `Level ${skill.level + 1} of ${skill.maxLevel} · ${skill.learned}/${skill.itemCount} words seen`),
-        el("div", { class: "crowns" }, ...crowns),
-      ),
-      skill.unlocked && skill.dueCount > 0
-        ? el("span", { class: "pill blue" }, String(skill.dueCount), "due")
-        : null,
-    ),
-    skill.notes
-      ? el("button", {
-          class: "tips-btn",
-          title: `Grammar tips for ${skill.title}`,
-          onclick: () => showTips(skill),
-        }, "📖")
-      : null,
-  );
+      {
+        label: "Practise (free)", kind: "ghost",
+        onclick: () => { closeDialog(); startSession({ kind: "practice", skillId: skill.id }); },
+      },
+      ...(skill.notes
+        ? [{ label: "📖 Tips", kind: "ghost", onclick: () => showTips(skill) }]
+        : []),
+    ],
+  });
 }
 
 /** Grammar tips for a skill, shown in a dialog so the lesson flow is untouched. */

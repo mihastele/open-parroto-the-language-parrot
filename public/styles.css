@@ -166,45 +166,41 @@ p { line-height: 1.55; margin: 6px 0; }
 
 /* ------------------------------------------------------------------ course path */
 
-.skill-node {
-  display: flex; align-items: center; gap: 14px;
-  padding: 14px;
-  border-radius: var(--radius);
-  border: 2px solid var(--line);
-  border-bottom-width: 5px;
+.skill-path {
+  position: relative;
+  display: flex; flex-direction: column; align-items: center;
+  padding: 16px 0 8px;
+}
+/* The centre track the nodes wind around. */
+.skill-path::before {
+  content: ""; position: absolute; top: 0; bottom: 0;
+  width: 6px; border-radius: 3px; background: var(--line);
+}
+.path-step {
+  position: relative;
+  display: flex; flex-direction: column; align-items: center;
+  margin: 12px 0;
+}
+.path-node {
+  width: 72px; height: 72px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 30px;
   background: var(--card);
-  width: 100%;
-  text-align: left;
-  margin-bottom: 10px;
+  border: 2px solid var(--line); border-bottom-width: 6px;
 }
-.skill-node .badge {
-  width: 52px; height: 52px; flex: none;
-  display: grid; place-items: center;
-  border-radius: 50%;
-  font-size: 24px;
-  background: var(--line);
+.path-node:active { transform: translateY(2px); border-bottom-width: 3px; }
+.path-node.done { background: var(--gold); border-color: #d9a400; }
+.path-node.current {
+  background: var(--green); border-color: var(--green-dark); color: #fff;
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--green) 25%, transparent);
 }
-.skill-node.unlocked { border-color: var(--green); }
-.skill-node.unlocked .badge { background: var(--green); color: #fff; }
-.skill-node.locked { opacity: .55; }
-.skill-node.completed .badge { background: var(--gold); }
-
-/* The main area starts the lesson; the tips button beside it opens the grammar notes. */
-.skill-main {
-  display: flex; align-items: center; gap: 14px; flex: 1; min-width: 0;
-  padding: 0; text-align: left;
+.path-node.todo { border-color: var(--blue); }
+.path-node.locked { background: var(--bg-alt); color: var(--muted); }
+.path-title {
+  margin-top: 6px; max-width: 120px; text-align: center;
+  font-size: 12px; font-weight: 800;
 }
-.skill-main:disabled { cursor: not-allowed; }
-.skill-main:not(:disabled):hover { filter: brightness(.98); }
-
-.tips-btn {
-  flex: none; align-self: center;
-  font-size: 20px; line-height: 1;
-  padding: 10px 12px;
-  border: 2px solid var(--line); border-bottom-width: 4px; border-radius: 12px;
-  background: var(--card);
-}
-.tips-btn:hover { border-color: var(--blue); }
+.path-start { margin-bottom: 6px; }
+.path-due { margin-bottom: 6px; }
 .tips-body { text-align: left; margin-top: 6px; }
 
 /* Honest no-voice state: quiet, neutral, and right where the audio would come from. */
@@ -488,7 +484,7 @@ p { line-height: 1.55; margin: 6px 0; }
 
 /* Bigger, easier tap targets on touch devices — most learners are on a phone or tablet. */
 @media (pointer: coarse) {
-  .choice, .token, .pair-item, .skill-node { min-height: 52px; }
+  .choice, .token, .pair-item, .path-node { min-height: 52px; }
   .btn { padding: 15px 22px; }
   .pair-item { font-size: 16px; padding: 15px 12px; }
 }
