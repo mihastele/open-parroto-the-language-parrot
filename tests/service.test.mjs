@@ -148,6 +148,17 @@ test("enrolling seeds locks, unlocks and SRS rows", () => {
   assert.equal(srsCount, allItems(getCourse("es-en")).length, "every item gets an SRS row");
 });
 
+test("grammar notes ride along with their skill, or null without", () => {
+  const { service } = freshService();
+  const owner = newUser(service);
+  const state = service.enrol(owner.id, "es-en");
+
+  assert.match(state.skills[0].notes, /masculine or feminine/, "Basics 1 teaches gender");
+  assert.match(state.skills[1].notes, /upside-down mark/, "Basics 2 teaches questions");
+  const food = state.skills.find((s) => s.id === "es-food");
+  assert.equal(food.notes, null, "a skill without notes sends null, not undefined");
+});
+
 test("a locked skill cannot be started as a lesson", () => {
   const { service } = freshService();
   const u = newUser(service);

@@ -351,27 +351,56 @@ function skillNode(skill, course) {
   const crowns = [...Array(skill.maxLevel)].map((_, i) =>
     el("span", { style: i < skill.level ? "color:var(--gold)" : "color:var(--line)" }, "★"));
 
-  return el("button", {
+  // A div row, not one big button: the tips button nested inside a button would be invalid
+  // HTML and unreachable to assistive tech. The main area still starts the lesson.
+  return el("div", {
     class: `skill-node ${skill.unlocked ? "unlocked" : "locked"} ${skill.completed ? "completed" : ""}`,
-    disabled: !skill.unlocked,
-    onclick: () => {
-      if (!skill.unlocked) return toast("Finish the previous skill first", "warn");
-      startSession({ kind: "lesson", skillId: skill.id });
-    },
   },
-    el("span", { class: "badge", text: skill.unlocked ? iconFor(skill.icon) : "🔒" }),
-    el("span", { class: "grow" },
-      el("div", { class: "bold", text: skill.title }),
-      el("div", { class: "small muted" },
-        !skill.unlocked ? "Locked"
-          : skill.completed ? `Mastered · ${skill.itemCount} words`
-          : `Level ${skill.level + 1} of ${skill.maxLevel} · ${skill.learned}/${skill.itemCount} words seen`),
-      el("div", { class: "crowns" }, ...crowns),
+    el("button", {
+      class: "skill-main grow",
+      disabled: !skill.unlocked,
+      onclick: () => {
+        if (!skill.unlocked) return toast("Finish the previous skill first", "warn");
+        startSession({ kind: "lesson", skillId: skill.id });
+      },
+    },
+      el("span", { class: "badge", text: skill.unlocked ? iconFor(skill.icon) : "🔒" }),
+      el("span", { class: "grow" },
+        el("div", { class: "bold", text: skill.title }),
+        el("div", { class: "small muted" },
+          !skill.unlocked ? "Locked"
+            : skill.completed ? `Mastered · ${skill.itemCount} words`
+            : `Level ${skill.level + 1} of ${skill.maxLevel} · ${skill.learned}/${skill.itemCount} words seen`),
+        el("div", { class: "crowns" }, ...crowns),
+      ),
+      skill.unlocked && skill.dueCount > 0
+        ? el("span", { class: "pill blue" }, String(skill.dueCount), "due")
+        : null,
     ),
-    skill.unlocked && skill.dueCount > 0
-      ? el("span", { class: "pill blue" }, String(skill.dueCount), "due")
+    skill.notes
+      ? el("button", {
+          class: "tips-btn",
+          title: `Grammar tips for ${skill.title}`,
+          onclick: () => showTips(skill),
+        }, "📖")
       : null,
   );
+}
+
+/** Grammar tips for a skill, shown in a dialog so the lesson flow is untouched. */
+function showTips(skill) {
+  play("tap", false);
+  const paras = String(skill.notes ?? "").split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const [first, ...rest] = paras;
+  showDialog({
+    emoji: "📖",
+    title: `${skill.title} tips`,
+    body: first ?? "",
+    extra: rest.length
+      ? el("div", { class: "tips-body" }, ...rest.map((p) => el("p", { text: p })))
+      : null,
+    actions: [{ label: "Got it", kind: "primary", onclick: closeDialog }],
+  });
 }
 
 function iconFor(name) {

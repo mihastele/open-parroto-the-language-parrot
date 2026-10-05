@@ -11,14 +11,17 @@
  *
  * Only `skill`, `target` and `source` are required. `skill_title` is read from the first
  * row that mentions a skill and inherited by later rows; a conflicting title is an error.
- * `alternatives` and `images` hold `|`-separated lists. Lines starting with `#` and blank
- * lines are ignored.
+ * `skill_notes` works the same way and becomes the skill's grammar tips (plain text,
+ * paragraphs separated by blank lines — write `\n` for a break, since a TSV cell cannot
+ * span lines). `alternatives` and `images` hold `|`-separated lists. Lines starting
+ * with `#` and blank lines are ignored.
  */
 
 import { normalise } from "../core/exercises.mjs";
 
 export const COLUMNS = [
-  "skill", "skill_title", "skill_icon", "target", "source", "note", "alternatives", "images",
+  "skill", "skill_title", "skill_icon", "skill_notes",
+  "target", "source", "note", "alternatives", "images",
 ];
 
 const COURSE_ID = /^[a-z]{2,3}-[a-z]{2,3}$/;
@@ -49,6 +52,14 @@ export function parseRows(text) {
   }
   if (!header) throw new Error("no header row found");
   return rows;
+}
+
+/**
+ * TSV cells cannot span lines, so a literal `\n` inside skill_notes means a line break
+ * (two of them start a new paragraph, matching the hand-written shape).
+ */
+function breaks(value) {
+  return String(value ?? "").replace(/\\n/g, "\n");
 }
 
 /** URL-safe slug for item ids, mirroring the hand-written style (`es-como-estas`). */
@@ -95,6 +106,7 @@ export function buildCourse(meta, rows) {
     let skill = skills.get(row.skill);
     if (!skill) {
       skill = { id: row.skill, title: row.skill_title || row.skill, icon: row.skill_icon || "star", items: [] };
+      if (row.skill_notes) skill.notes = breaks(row.skill_notes);
       skills.set(row.skill, skill);
     } else {
       if (row.skill_title && row.skill_title !== skill.title) {
@@ -104,6 +116,13 @@ export function buildCourse(meta, rows) {
       if (row.skill_icon && row.skill_icon !== skill.icon) {
         errors.push(`${where}: skill "${row.skill}" already uses icon "${skill.icon}"`);
         continue;
+      }
+      if (row.skill_notes) {
+        if (!skill.notes) skill.notes = breaks(row.skill_notes);
+        else if (skill.notes !== breaks(row.skill_notes)) {
+          errors.push(`${where}: skill "${row.skill}" already has different notes`);
+          continue;
+        }
       }
     }
 
@@ -141,6 +160,11 @@ export function buildCourse(meta, rows) {
   for (const skill of skills.values()) {
     if (skill.items.length > 0 && skill.items.length < 5) {
       errors.push(`skill "${skill.id}" has only ${skill.items.length} item(s); add at least 5`);
+    }
+    // Mirror tools/validate-content.mjs: the importer's guarantee is that its output
+    // validates on the first run.
+    if (skill.notes !== undefined && skill.notes.trim().length < 20) {
+      errors.push(`skill "${skill.id}" has notes too short to teach anything`);
     }
   }
 

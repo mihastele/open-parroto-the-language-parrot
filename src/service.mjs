@@ -277,6 +277,7 @@ export class Service {
         id: skill.id,
         title: skill.title,
         icon: skill.icon,
+        notes: skill.notes ?? null,
         index,
         level,
         maxLevel: MAX_SKILL_LEVEL,

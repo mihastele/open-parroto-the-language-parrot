@@ -59,6 +59,7 @@ rather than failing with a stack trace.
 | Daily quests | 3 rotating quests per day, claimable for gems |
 | Achievements | 10 achievements driven by real totals |
 | Stories | Dialogue with comprehension questions, unlocked by progress |
+| Grammar tips | Per-skill notes behind the 📖 button, authored alongside the vocabulary |
 | Spaced repetition | SM-2 style scheduler deciding what to review and when |
 
 ## Every exercise type
@@ -208,7 +209,7 @@ src/
   server.mjs             HTTP router + static files
 public/
   index.html  app.js  sound.js  styles.css      the client, no build step
-tests/                 180 tests
+tests/                 182 tests
 tools/
   seed.mjs               create a demo account with progress
   validate-content.mjs   check every course for structural problems
@@ -285,11 +286,12 @@ duplicate ids.
 Write vocabulary in a spreadsheet, export it as tab-separated values with this header row:
 
 ```
-skill	skill_title	skill_icon	target	source	note	alternatives	images
+skill	skill_title	skill_icon	skill_notes	target	source	note	alternatives	images
 ```
 
 Only `skill`, `target` and `source` are required. `skill_title` is taken from the first
-row that mentions a skill; `alternatives` and `images` hold `|`-separated lists; lines
+row that mentions a skill; `skill_notes` works the same way and becomes the grammar tips
+behind the skill's 📖 button. `alternatives` and `images` hold `|`-separated lists; lines
 starting with `#` are ignored. Each skill needs at least 5 items — that is the minimum
 the validator accepts for generating distractors.
 

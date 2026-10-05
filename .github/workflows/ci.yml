@@ -1,0 +1,23 @@
+# Parroto — continuous integration.
+#
+# Zero dependencies means no install step: checkout, pick a Node, and run the same three
+# gates a course author runs locally. This must stay green before course data grows,
+# because validate and audit are what keep new vocabulary shippable.
+
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm test
+      - run: npm run validate
+      - run: npm run audit

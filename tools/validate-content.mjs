@@ -58,6 +58,10 @@ for (const course of COURSES) {
 
     if (!skill.title) problem(course.id, `skill ${skill.id} has no title`);
     if (!skill.icon) warn(course.id, `skill ${skill.id} has no icon`);
+    if (skill.notes !== undefined &&
+        (typeof skill.notes !== "string" || skill.notes.trim().length < 20)) {
+      problem(course.id, `skill ${skill.id} has notes too short to teach anything`);
+    }
     if (skill.items.length < 5) {
       problem(course.id, `skill ${skill.id} has only ${skill.items.length} items; too few to teach`);
     }

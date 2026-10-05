@@ -186,9 +186,26 @@ p { line-height: 1.55; margin: 6px 0; }
 }
 .skill-node.unlocked { border-color: var(--green); }
 .skill-node.unlocked .badge { background: var(--green); color: #fff; }
-.skill-node.locked { opacity: .55; cursor: not-allowed; }
+.skill-node.locked { opacity: .55; }
 .skill-node.completed .badge { background: var(--gold); }
-.skill-node:not(.locked):hover { filter: brightness(.98); }
+
+/* The main area starts the lesson; the tips button beside it opens the grammar notes. */
+.skill-main {
+  display: flex; align-items: center; gap: 14px; flex: 1; min-width: 0;
+  padding: 0; text-align: left;
+}
+.skill-main:disabled { cursor: not-allowed; }
+.skill-main:not(:disabled):hover { filter: brightness(.98); }
+
+.tips-btn {
+  flex: none; align-self: center;
+  font-size: 20px; line-height: 1;
+  padding: 10px 12px;
+  border: 2px solid var(--line); border-bottom-width: 4px; border-radius: 12px;
+  background: var(--card);
+}
+.tips-btn:hover { border-color: var(--blue); }
+.tips-body { text-align: left; margin-top: 6px; }
 
 .crowns { display: flex; gap: 2px; font-size: 12px; }
 

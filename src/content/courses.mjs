@@ -6,7 +6,10 @@
  * of it is copied from Duolingo's copyrighted course material.
  *
  * A course is data:
- *   { id, name, from, to, flag, tts, skills: [ { id, title, icon, items: [...] } ] }
+ *   { id, name, from, to, flag, tts, skills: [ { id, title, icon, notes?, items: [...] } ] }
+ *
+ * A skill's `notes` are the grammar tips shown behind its 📖 button: plain text,
+ * paragraphs separated by blank lines. Skills without notes simply show no button.
  *
  * An "item" is the vocabulary/phrase unit everything else is generated from:
  *   { id, target, source, images?, note?, alternatives? }
@@ -78,6 +81,11 @@ const SPANISH = {
       id: "es-basics-1",
       title: "Basics 1",
       icon: "chat",
+      notes: "Every Spanish noun is masculine or feminine. You hear it in the article: "
+        + "el niño (the boy) is masculine, la niña (the girl) is feminine.\n\n"
+        + "There is no rule without exceptions, but words ending in -o are usually masculine "
+        + "and words ending in -a usually feminine. Agua breaks the pattern: it is feminine, "
+        + "but takes el in the singular (el agua) because it starts with a stressed a.",
       items: [
         { id: "es-hola", target: "hola", source: "hello", images: ["👋"], note: "A greeting for any time of day." },
         { id: "es-adios", target: "adiós", source: "goodbye", images: ["👋"] },
@@ -98,6 +106,10 @@ const SPANISH = {
       id: "es-basics-2",
       title: "Basics 2",
       icon: "chat",
+      notes: "Spanish questions open with an upside-down mark: ¿cómo estás? That first mark tells "
+        + "the listener a question is coming before the sentence even ends.\n\n"
+        + "The written accent matters: si means if, but sí means yes. Tu means your, but tú means "
+        + "you. Keep the accent the course teaches you — dropping it can change the word entirely.",
       items: [
         { id: "es-por-favor", target: "por favor", source: "please" },
         { id: "es-perdon", target: "perdón", source: "excuse me", alternatives: ["perdon"] },

@@ -10,7 +10,7 @@
  *
  * The module lands in src/content/courses/ (or --out) exporting COURSE, and is picked up
  * automatically — no registry edit. TSV columns (header row required):
- *   skill | skill_title | skill_icon | target | source | note | alternatives | images
+ *   skill | skill_title | skill_icon | skill_notes | target | source | note | alternatives | images
  *
  * `alternatives` and `images` hold `|`-separated lists. Lines starting with `#` and blank
  * lines are ignored. With `--check` nothing is written; the input is only validated.

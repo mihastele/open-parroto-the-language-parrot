@@ -89,6 +89,36 @@ test("identical targets in different skills get unique ids", () => {
   assert.equal(new Set(ids).size, ids.length);
 });
 
+test("skill_notes become the skill's grammar tips", () => {
+  const header = "skill\tskill_title\tskill_icon\tskill_notes\ttarget\tsource\tnote\talternatives\timages";
+  const body = (first, second = "") => [
+    header,
+    `s\tT\ti\t${first}\ta\tb`,
+    `s\tT\ti\t${second}\tc\td`,
+    "s\tT\ti\t\te\tf",
+    "s\tT\ti\t\tg\th",
+    "s\tT\ti\t\tj\tk",
+  ].join("\n");
+
+  const good = buildCourse(META, parseRows(body("First paragraph.\\n\\nSecond paragraph, long enough.")));
+  assert.deepEqual(good.errors, []);
+  assert.equal(good.course.skills[0].notes, "First paragraph.\n\nSecond paragraph, long enough.");
+
+  const repeat = buildCourse(META, parseRows(
+    body("Same long notes here, repeated.", "Same long notes here, repeated.")));
+  assert.deepEqual(repeat.errors, [], "repeating identical notes is fine");
+
+  const conflict = buildCourse(META, parseRows(
+    body("First version of the notes, long.", "Totally different notes, long enough.")));
+  assert.match(conflict.errors.join("\n"), /already has different notes/);
+
+  const short = buildCourse(META, parseRows(body("Too short.")));
+  assert.match(short.errors.join("\n"), /notes too short/);
+
+  const plain = buildCourse(META, parseRows(basicsRows()));
+  assert.equal(plain.course.skills[0].notes, undefined, "no column means no notes");
+});
+
 test("rendered module imports and carries the course", async () => {
   const { course } = buildCourse(META, parseRows(basicsRows()));
   const dir = mkdtempSync(join(tmpdir(), "parroto-import-"));
