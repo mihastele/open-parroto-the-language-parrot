@@ -482,8 +482,9 @@ async function loadHints(ex) {
     if (state.session?.exercise?.id !== ex.id) return;
     state.hints = res.hints ?? [];
     // The fetch is async and finishes after the render that triggered it, so the hint button
-    // would never appear without this second render.
-    if (state.screen === "lesson" && state.hints.length) render();
+    // would never appear without this second render. Never re-render while feedback is up:
+    // that would restart the feedback bar's slide-up animation and read as a flicker.
+    if (state.screen === "lesson" && state.hints.length && !state.feedback) render();
   } catch { /* hints are optional; a failure just means no hint button */ }
 }
 
@@ -532,7 +533,7 @@ function lessonScreen() {
   const ex = s.exercise;
   const progress = s.total > 0 ? s.index / s.total : 0;
 
-  return el("div", { class: "screen" },
+  return el("div", { class: "screen lesson" },
     el("div", { class: "lesson-top" },
       el("button", { class: "btn btn-ghost", style: "padding:8px 12px", onclick: confirmQuit }, "✕"),
       el("div", { class: "progress-track" },
@@ -925,9 +926,9 @@ async function submitAnswer() {
       : null;
     state.feedback = { ...res.result, finished: res.finished, summary: res.summary };
     state.lastSummary = res.summary ?? state.lastSummary;
-    // The pending answer belongs to the exercise that is coming next, so reset it to that
-    // type's shape now — otherwise the next render draws against the old value and throws.
-    if (res.next) state.answer = emptyAnswer(res.next);
+    // Keep the user's answer on screen while the feedback bar is up, so the exercise
+    // behind it still shows what they picked. The answer is reset to the next
+    // exercise's shape in nextExercise(), when Continue is pressed.
 
     // Sound makes the difference between "I answered" and "that felt good".
     if (res.result.correct) {
@@ -937,10 +938,6 @@ async function submitAnswer() {
     }
 
     render();
-
-    // Load the next question's hints while the learner reads the feedback, so the hint button is
-    // ready the moment they hit Continue.
-    if (res.next) loadHints(res.next);
   } catch (err) {
     // Any unexpected desync: resynchronise the session rather than leaving the UI stuck.
     if (err.code === "out_of_sync" || err.code === "no_exercise") {

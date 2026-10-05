@@ -64,6 +64,11 @@ a:hover { text-decoration: underline; }
 .screen { animation: fade .18s ease-out; }
 @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
+/* In-lesson updates (picking a choice, showing feedback) re-render the whole screen; replaying
+   the fade on each of them reads as a flicker, so the lesson screen stays put and only the
+   feedback bar animates. */
+.screen.lesson { animation: none; }
+
 .center-screen {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   min-height: 100vh; text-align: center; gap: 8px;
