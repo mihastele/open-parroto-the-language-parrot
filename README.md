@@ -201,15 +201,18 @@ src/
   core/gamification.mjs  XP, streaks, hearts, leagues, quests, achievements (pure)
   core/generator.mjs     vocabulary item → every exercise type
   content/courses.mjs    the courses and stories (data)
+  content/courses/       drop-in courses: course-<id>.mjs exporting COURSE (+ optional STORIES)
+  content/course-import.mjs  TSV → course objects for the bulk importer (pure)
   db.mjs                 SQLite schema
   service.mjs            business logic over the database
   server.mjs             HTTP router + static files
 public/
   index.html  app.js  sound.js  styles.css      the client, no build step
-tests/                 168 tests
+tests/                 180 tests
 tools/
   seed.mjs               create a demo account with progress
   validate-content.mjs   check every course for structural problems
+  import-course.mjs      build a course module from a TSV of vocabulary
   audit-features.mjs     prove every course offers every feature
   verify-forgiving.mjs   prove typo tolerance survives a real session
 ```
@@ -276,3 +279,29 @@ npm run validate    # check every course's structure and report problems
 `validate-content.mjs` catches the content bugs that are invisible in the UI: items with no
 distractors, skills too small to teach, story answers missing from their own choices, and
 duplicate ids.
+
+### Adding a course from a spreadsheet
+
+Write vocabulary in a spreadsheet, export it as tab-separated values with this header row:
+
+```
+skill	skill_title	skill_icon	target	source	note	alternatives	images
+```
+
+Only `skill`, `target` and `source` are required. `skill_title` is taken from the first
+row that mentions a skill; `alternatives` and `images` hold `|`-separated lists; lines
+starting with `#` are ignored. Each skill needs at least 5 items — that is the minimum
+the validator accepts for generating distractors.
+
+```bash
+npm run import:course -- words.tsv \
+  --id pt-en --name Portuguese --from English --to Portuguese \
+  --flag "🇵🇹" --tts pt-PT --color "#009b3a"
+```
+
+The importer validates everything `npm run validate` would flag, so an imported course
+passes first time. The generated module lands in `src/content/courses/` and is picked
+up automatically — no registry edit; confirm with `npm run validate` and
+`npm run audit`. Stories are still authored by hand: add a `STORIES` export to the
+generated file. Pass `--check` to validate a TSV without writing anything, or `--out`
+to write somewhere else (files outside `src/content/courses/` are ignored).

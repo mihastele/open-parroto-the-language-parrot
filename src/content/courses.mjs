@@ -13,7 +13,56 @@
  *
  * Exercise types are derived from items at runtime by exercisePlanFor(), so adding an item
  * automatically feeds every relevant exercise type.
+ *
+ * The six courses below are built in. Drop-in courses live in `./courses/` as
+ * `course-<id>.mjs` files (written by `npm run import:course`) and are picked up
+ * automatically — see loadExtraCourses.
  */
+
+import { readdir } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+/** Directory auto-scanned for drop-in course files. Missing means no extra courses. */
+export const EXTRA_COURSES_DIR = join(dirname(fileURLToPath(import.meta.url)), "courses");
+
+/**
+ * Loads drop-in course files from a directory. Each `course-*.mjs` file must export
+ * `COURSE` ({ id, name, ..., skills: [...] }) and may export `STORIES` ([...]).
+ * Files load in filename order, so the resulting course order is deterministic.
+ * `existingIds` guards against a drop-in shadowing a built-in course.
+ */
+export async function loadExtraCourses(dir = EXTRA_COURSES_DIR, existingIds = []) {
+  const courses = [];
+  const stories = {};
+  let files = [];
+  try {
+    files = (await readdir(dir))
+      .filter((f) => f.startsWith("course-") && f.endsWith(".mjs"))
+      .sort();
+  } catch (err) {
+    if (err?.code !== "ENOENT") throw err;
+    return { courses, stories };
+  }
+  const seen = new Set(existingIds);
+  for (const file of files) {
+    const mod = await import(pathToFileURL(join(dir, file)).href);
+    const course = mod.COURSE;
+    if (!course || typeof course.id !== "string" || !Array.isArray(course.skills)) {
+      throw new Error(`${file}: must export COURSE { id, name, ..., skills: [...] }`);
+    }
+    if (seen.has(course.id)) {
+      throw new Error(`${file}: duplicate course id "${course.id}"`);
+    }
+    seen.add(course.id);
+    courses.push(course);
+    if (mod.STORIES !== undefined) {
+      if (!Array.isArray(mod.STORIES)) throw new Error(`${file}: STORIES must be an array`);
+      stories[course.id] = mod.STORIES;
+    }
+  }
+  return { courses, stories };
+}
 
 /** Spanish (for English speakers) — the flagship course. */
 const SPANISH = {
@@ -769,7 +818,14 @@ const STORIES = {
   ],
 };
 
-export const COURSES = [SPANISH, FRENCH, GERMAN, ITALIAN, NORWEGIAN, SWEDISH];
+const BUILT_IN = [SPANISH, FRENCH, GERMAN, ITALIAN, NORWEGIAN, SWEDISH];
+
+// Drop-in courses are picked up automatically — no registry edit needed. The top-level
+// await is transparent to every existing static importer of this module.
+const extra = await loadExtraCourses(EXTRA_COURSES_DIR, BUILT_IN.map((c) => c.id));
+Object.assign(STORIES, extra.stories);
+
+export const COURSES = [...BUILT_IN, ...extra.courses];
 
 export function getCourse(id) {
   return COURSES.find((c) => c.id === id) ?? null;
