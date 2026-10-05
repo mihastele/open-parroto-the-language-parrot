@@ -494,6 +494,7 @@ async function startSession({ kind, skillId }) {
     state.hintText = {};
     state.screen = "lesson";
     render();
+    focusQuestion();
     afterRenderForExercise(res.exercise);
     loadHints(res.exercise);
   } catch (err) {
@@ -628,6 +629,18 @@ function answerShapeOk(ex) {
   }
 }
 
+/**
+ * Puts keyboard and screen-reader focus on the new question after advancing. Every
+ * render replaces the DOM, which drops focus to <body>; without this, keyboard users
+ * restart from the top of the page on every question.
+ */
+function focusQuestion() {
+  const t = document.querySelector(".lesson .q-text") ??
+    document.querySelector(".lesson .speak-btn") ??
+    document.querySelector(".lesson .q-prompt");
+  if (t) t.focus({ preventScroll: true });
+}
+
 function lessonScreen() {
   const s = state.session;
   if (!s?.exercise) return el("div", { class: "spinner" });
@@ -635,7 +648,9 @@ function lessonScreen() {
   const ex = s.exercise;
   const progress = s.total > 0 ? s.index / s.total : 0;
 
-  return el("div", { class: "screen lesson" },
+  // Space below the content while the fixed feedback bar is up, so the last choices
+  // stay reachable on a short screen instead of hiding behind the bar.
+  return el("div", { class: `screen lesson${state.feedback ? " with-feedback" : ""}` },
     el("div", { class: "lesson-top" },
       el("button", { class: "btn btn-ghost", style: "padding:8px 12px", onclick: confirmQuit }, "✕"),
       el("div", { class: "progress-track" },
@@ -707,7 +722,7 @@ function afterRenderForExercise(ex) {
 }
 
 function exerciseView(ex) {
-  const head = el("div", { class: "q-prompt" });
+  const head = el("div", { class: "q-prompt", tabindex: "-1" });
   if (ex.type === "listen_select" || ex.type === "listen_type" || ex.type === "identify_character") {
     head.append(el("button", {
       class: "speak-btn",
@@ -717,7 +732,8 @@ function exerciseView(ex) {
   }
   head.append(el("div", { class: "grow" },
     el("div", { class: "small muted", text: ex.directions }),
-    ex.prompt ? el("div", { class: "q-text", text: ex.prompt }) : null,
+    // tabindex makes the question a focus target when advancing (see focusQuestion).
+    ex.prompt ? el("div", { class: "q-text", tabindex: "-1", text: ex.prompt }) : null,
   ));
 
   const body = el("div", {});
@@ -782,7 +798,11 @@ function choiceGrid(ex) {
              (state.feedback && state.feedback.expected === c ? " correct" : "") +
              (state.feedback && !state.feedback.correct && state.answer === c ? " wrong" : ""),
       disabled: !!state.feedback,
-      onclick: () => { state.answer = c; play("tap"); render(); },
+      // render() replaces the DOM and drops focus: put it back on the picked choice.
+      onclick: () => {
+        state.answer = c; play("tap"); render();
+        document.querySelector(".lesson .choice.selected")?.focus({ preventScroll: true });
+      },
     }, c)));
 }
 
@@ -795,7 +815,10 @@ function imageGrid(ex) {
              (state.feedback && !state.feedback.correct && state.answer === c.emoji ? " wrong" : "") +
              (state.feedback && !state.feedback.correct && state.feedback.expected === c.emoji ? " correct" : ""),
       disabled: !!state.feedback,
-      onclick: () => { state.answer = c.emoji; render(); },
+      onclick: () => {
+        state.answer = c.emoji; render();
+        document.querySelector(".lesson .choice.selected")?.focus({ preventScroll: true });
+      },
     },
       el("span", { class: "emoji", text: c.emoji }),
       el("span", { class: "small muted", text: c.label }),
@@ -979,7 +1002,7 @@ function feedbackBar() {
   const f = state.feedback;
   const isLast = f.finished;
   const nearMiss = f.correct && f.mistake;   // forgiven: worth pointing out what slipped
-  return el("div", { class: `feedback ${f.correct ? "correct" : "wrong"}` },
+  return el("div", { class: `feedback ${f.correct ? "correct" : "wrong"}`, role: "status" },
     el("div", { class: "inner" },
       el("div", { class: "row-between" },
         el("div", { style: "flex:1" },
@@ -1072,6 +1095,8 @@ async function submitAnswer() {
     }
 
     render();
+    // Keyboard flow continues here: focus Continue so Enter advances the lesson.
+    document.querySelector(".lesson .feedback .btn")?.focus({ preventScroll: true });
   } catch (err) {
     // Any unexpected desync: resynchronise the session rather than leaving the UI stuck.
     if (err.code === "out_of_sync" || err.code === "no_exercise") {
@@ -1099,6 +1124,7 @@ async function resyncSession(sessionId) {
     state.feedback = null;
     state.answer = emptyAnswer(next.exercise);
     render();
+    focusQuestion();
     afterRenderForExercise(next.exercise);
   } catch (e) {
     toast("Could not reload the lesson — starting fresh", "warn");
@@ -1126,6 +1152,7 @@ function nextExercise() {
   state.answer = emptyAnswer(state.session.exercise);
   state.hintText = {};
   render();
+  focusQuestion();
   afterRenderForExercise(state.session.exercise);
   loadHints(state.session.exercise);
 }

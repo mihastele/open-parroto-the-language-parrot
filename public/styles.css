@@ -69,6 +69,12 @@ a:hover { text-decoration: underline; }
    feedback bar animates. */
 .screen.lesson { animation: none; }
 
+/* While the fixed feedback bar is up, keep the last choices scrollable above it. */
+.screen.lesson.with-feedback { padding-bottom: 240px; }
+
+/* Keyboard users get a visible target everywhere; mouse users see no change. */
+:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
+
 .center-screen {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   min-height: 100vh; text-align: center; gap: 8px;
