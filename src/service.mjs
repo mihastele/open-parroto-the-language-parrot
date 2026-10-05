@@ -24,6 +24,10 @@ import {
 import { COURSES, getCourse, getSkill, allItems, storiesFor, courseSummaries } from "./content/courses.mjs";
 
 const MAX_SKILL_LEVEL = 5;
+/** A placement test ends after this many misses — the ceiling is the placement. */
+const PLACEMENT_MISTAKES = 2;
+/** How many sample items each skill contributes to a placement test. */
+const PLACEMENT_PER_SKILL = 3;
 /** How many consecutive perfect levels are needed to earn each successive level of a skill. */
 const LESSON_SIZE = 8;
 
@@ -329,11 +333,47 @@ export class Service {
   // ------------------------------------------------------------ lessons
 
   /**
+   * The mistake bank: items answered wrong and not since answered right, most recent
+   * first. Stories are comprehension checks, not vocabulary, so they never land here.
+   * Each entry carries what the client needs to list it and to seed a session from it.
+   */
+  mistakes(userId, courseId) {
+    const rows = this.db.prepare(`
+      SELECT a.item_id,
+             SUM(CASE WHEN a.correct = 0 THEN 1 ELSE 0 END) AS wrongs,
+             MAX(CASE WHEN a.correct = 0 THEN a.at ELSE 0 END) AS last_wrong,
+             MAX(a.at) AS last_seen
+      FROM lesson_answers a JOIN lesson_sessions s ON s.id = a.session_id
+      WHERE s.user_id = ? AND s.course_id = ?
+      GROUP BY a.item_id
+      HAVING last_wrong >= last_seen
+      ORDER BY last_wrong DESC
+    `).all(userId, courseId);
+    const out = [];
+    for (const row of rows) {
+      const item = itemById(courseId, row.item_id);
+      if (!item) continue;
+      out.push({
+        itemId: item.id,
+        target: item.target,
+        source: item.source,
+        skillId: item.skillId,
+        timesWrong: row.wrongs,
+        lastWrongAt: row.last_wrong,
+      });
+    }
+    return out;
+  }
+
+  /**
    * Starts a lesson, practice session or story.
    *
    * kind: 'lesson'    — next level of an unlocked skill (costs hearts on mistakes)
    *       'practice'  — free practice on a skill you have already touched (no hearts)
    *       'review'    — spaced-repetition queue across the course (no hearts)
+   *       'mistakes'  — the mistake bank: recent misses, most recent first (no hearts)
+   *       'placement' — test out of early skills: samples every skill in order, stops at
+   *                     the miss ceiling, unlocks the consecutive passed prefix (no hearts)
    *       'story'     — a dialogue with comprehension questions
    */
   startSession(userId, { courseId, skillId, kind = "lesson", storyId = null, clientDay = null }) {
@@ -342,11 +382,12 @@ export class Service {
     const user = this.getUser(userId);
     const today = clientDay || dayKey(new Date());
 
-    if (!["lesson", "practice", "review", "story"].includes(kind)) {
+    if (!["lesson", "practice", "review", "mistakes", "placement", "story"].includes(kind)) {
       throw badRequest(`Unknown session kind: ${kind}`);
     }
 
-    if (kind !== "practice" && kind !== "review" && kind !== "story" && user.hearts <= 0) {
+    if (kind !== "practice" && kind !== "review" && kind !== "mistakes" &&
+        kind !== "placement" && kind !== "story" && user.hearts <= 0) {
       throw new AppError(409, "no_hearts",
         `You are out of hearts. Refill for ${HEART_REFILL_GEMS} gems, or do practice which is free.`,
         { hearts: 0, refillCost: HEART_REFILL_GEMS, minutesToNextHeart: minutesToNextHeart(user) });
@@ -392,6 +433,34 @@ export class Service {
       }
       items = queue;
       exercises = buildExercisesFor(queue, course, { speaking: true });
+    } else if (kind === "mistakes") {
+      const bank = this.mistakes(userId, courseId).slice(0, LESSON_SIZE);
+      const srsById = new Map(
+        this.db.prepare("SELECT * FROM srs_items WHERE user_id = ? AND course_id = ?")
+          .all(userId, courseId).map((r) => [r.item_id, mapSrs(r)]));
+      items = bank.map((m) => ({
+        ...itemById(courseId, m.itemId),
+        itemId: m.itemId,
+        skillId: m.skillId,
+        srs: srsById.get(m.itemId) ?? freshItem(),
+      })).filter((i) => i.id);
+      exercises = items.length ? buildExercisesFor(items, course, { speaking: true }) : [];
+      if (exercises.length === 0) {
+        throw new AppError(409, "no_mistakes", "No mistakes to practise — nicely done!");
+      }
+    } else if (kind === "placement") {
+      // Three sample items per skill, skills in course order: prove what you know until
+      // the miss ceiling stops the test. Attribution rides on each exercise's skillId.
+      const parts = [];
+      for (const skill of course.skills) {
+        const sample = skill.items.slice(0, PLACEMENT_PER_SKILL)
+          .map((i) => ({ ...i, skillId: skill.id, itemId: i.id, srs: freshItem() }));
+        if (!sample.length) continue;
+        parts.push(...buildExercisesFor(sample, course, { speaking: true }).slice(0, PLACEMENT_PER_SKILL));
+      }
+      items = parts.map((e) => ({ ...itemById(courseId, e.itemId), itemId: e.itemId, skillId: e.skillId }));
+      exercises = parts;
+      if (exercises.length === 0) throw badRequest("This course has no exercises yet");
     } else {
       const skill = getSkill(courseId, skillId);
       if (!skill) throw notFound(`No skill ${skillId} in ${courseId}`);
@@ -530,7 +599,10 @@ export class Service {
       // A failed exercise is re-served once, at the end of the session. Stories are one-shot
       // comprehension checks, and a retry is never re-queued again — otherwise failing a
       // retry would append another retry forever and the session could never end.
-      if (exercise.type !== "story" && exercise.type !== "review_mistake") {
+      // Placement has its own stopping rule (the miss ceiling), so retries would only
+      // spend the test on skills that already failed it.
+      if (exercise.type !== "story" && exercise.type !== "review_mistake" &&
+          session.kind !== "placement") {
         const again = {
           ...exercise,
           id: `${exercise.id}:retry`,
@@ -572,12 +644,16 @@ export class Service {
     state.answeredIds = [...(state.answeredIds ?? []), exercise.id];
 
     // ---- out of hearts ends the session early, like Duolingo
-    const outOfHearts = hearts <= 0 && session.kind !== "practice" && session.kind !== "review";
+    const outOfHearts = hearts <= 0 && session.kind !== "practice" &&
+      session.kind !== "review" && session.kind !== "mistakes" && session.kind !== "placement";
+
+    // A placement test ends at the miss ceiling: the ceiling IS the placement.
+    const ceilingHit = session.kind === "placement" && state.mistakes.length >= PLACEMENT_MISTAKES;
 
     this.db.prepare("UPDATE lesson_sessions SET state = ? WHERE id = ?")
       .run(JSON.stringify(state), sessionId);
 
-    const finished = outOfHearts || state.exerciseIndex >= state.exercises.length;
+    const finished = outOfHearts || ceilingHit || state.exerciseIndex >= state.exercises.length;
 
     const payload = {
       result: {
@@ -767,7 +843,7 @@ export class Service {
       `).run(userId, weekKey(new Date()), xp, xp);
 
       this.bumpQuests(userId, today, { xp, lessons: 1, perfect: state.mistakes.length === 0 ? 1 : 0,
-                                       combo: state.comboMax, review: session.kind === "review" ? state.seen.length : 0,
+                                       combo: state.comboMax, review: session.kind === "review" || session.kind === "mistakes" ? state.seen.length : 0,
                                        newWords: state.seen.filter((id) => {
                                          const row = this.db.prepare(
                                            "SELECT reps FROM srs_items WHERE user_id=? AND course_id=? AND item_id=?")
@@ -780,6 +856,12 @@ export class Service {
     let skillUp = null;
     if (passed && session.kind === "lesson" && session.skill_id) {
       skillUp = this.levelUpSkill(userId, courseId, session.skill_id);
+    }
+
+    // ---- placement: unlock the consecutive passed prefix, no crowns
+    let placed = null;
+    if (session.kind === "placement") {
+      placed = this.applyPlacement(userId, courseId, state);
     }
 
     // The session must be recorded as finished BEFORE achievements are evaluated, or
@@ -833,6 +915,7 @@ export class Service {
       hearts: refreshed.hearts,
       gems: refreshed.gems,
       skillUp,
+      placed,
       achievements: fresh.filter(Boolean),
       totalXp: refreshed.xp,
     };
@@ -872,6 +955,34 @@ export class Service {
       }
     }
     return { skillId, level: newLevel, maxLevel: MAX_SKILL_LEVEL, completed: newLevel >= MAX_SKILL_LEVEL, unlocked };
+  }
+
+  /**
+   * Unlocks the consecutive passed prefix of a placement test: every skill whose sampled
+   * exercises were all answered, all correctly, starting from the first skill. Stops at
+   * the first failed or unreached skill. Levels and crowns are never granted — the test
+   * places you on the path, the lessons still earn the crowns. Returns the highest
+   * placed skill, or null when even the first skill was missed.
+   */
+  applyPlacement(userId, courseId, state) {
+    const course = getCourse(courseId);
+    if (!course) return null;
+    const wrongItems = new Set(state.mistakes.map((m) => m.itemId));
+    const answeredIds = new Set(state.answeredIds ?? []);
+    let placed = null;
+    for (const skill of course.skills) {
+      const mine = state.exercises.filter((e) => e.skillId === skill.id);
+      if (!mine.length) continue;
+      const clean = mine.every((e) => answeredIds.has(e.id)) &&
+        !mine.some((e) => wrongItems.has(e.itemId));
+      if (!clean) break;
+      this.db.prepare(`
+        UPDATE skill_progress SET unlocked = 1
+        WHERE user_id = ? AND course_id = ? AND skill_id = ?
+      `).run(userId, courseId, skill.id);
+      placed = { id: skill.id, title: skill.title };
+    }
+    return placed;
   }
 
   updateSrs(userId, courseId, itemId, skillId, gradeValue, now = Date.now()) {
@@ -1054,6 +1165,7 @@ export class Service {
       currentCourse: current,
       nextSkill,
       dueCount: due,
+      mistakeCount: current ? this.mistakes(userId, current.id).length : 0,
       quests: this.quests(userId, today),
       dailyGoalMet: (user.daily_xp_day === today ? user.daily_xp : 0) >= user.daily_goal,
       streakTier: streakTierSafe(user.streak),

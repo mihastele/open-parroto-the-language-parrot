@@ -193,6 +193,12 @@ function buildRoutes(service) {
     s.startSession(user.id, { ...body, kind: "practice" }));
   add("POST", "/api/review", ({ user, body, service: s }) =>
     s.startSession(user.id, { ...body, kind: "review" }));
+  add("POST", "/api/mistakes", ({ user, body, service: s }) =>
+    s.startSession(user.id, { ...body, kind: "mistakes" }));
+  add("GET", "/api/mistakes", ({ user, query, service: s }) => {
+    if (!query.courseId) throw new AppError(400, "bad_request", "Pass ?courseId=");
+    return { mistakes: s.mistakes(user.id, query.courseId) };
+  });
 
   // ---- economy
   add("POST", "/api/shop/hearts", ({ user, service: s }) => s.refillHearts(user.id));

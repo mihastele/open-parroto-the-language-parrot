@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS lesson_sessions (
   user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   course_id   TEXT NOT NULL,
   skill_id    TEXT,                 -- null for course-wide review and story sessions
-  kind        TEXT NOT NULL,        -- lesson | practice | review | story
+  kind        TEXT NOT NULL,        -- lesson | practice | review | mistakes | placement | story
   state       TEXT NOT NULL,        -- json: current queue, index, hearts, mistakes
   started_at  INTEGER NOT NULL,
   finished_at INTEGER,

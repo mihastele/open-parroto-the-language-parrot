@@ -41,7 +41,8 @@ export function daysBetween(a, b) {
  */
 export function lessonXp({ kind = "lesson", correct, total, comboMax = 0, timed = false }) {
   const base = kind === "story" ? XP_PER_PERFECT_STORY
-             : kind === "practice" || kind === "review" ? XP_PER_PRACTICE
+             : kind === "practice" || kind === "review" || kind === "mistakes" || kind === "placement"
+               ? XP_PER_PRACTICE
              : XP_PER_LEVEL_COMPLETE;
   const accuracy = total > 0 ? correct / total : 1;
   const accuracyBonus = Math.round(base * 0.5 * accuracy);

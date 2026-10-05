@@ -60,6 +60,8 @@ rather than failing with a stack trace.
 | Achievements | 10 achievements driven by real totals |
 | Stories | Dialogue with comprehension questions, unlocked by progress |
 | Grammar tips | Per-skill notes behind the 📖 button, authored alongside the vocabulary |
+| Mistake bank | Recent misses listed and practicable as a free session, most recent first |
+| Placement test | Samples every skill in order, ends at 2 misses, unlocks the clean prefix |
 | Spaced repetition | SM-2 style scheduler deciding what to review and when |
 
 ## Every exercise type
@@ -209,7 +211,7 @@ src/
   server.mjs             HTTP router + static files
 public/
   index.html  app.js  sound.js  styles.css      the client, no build step
-tests/                 182 tests
+tests/                 185 tests
 tools/
   seed.mjs               create a demo account with progress
   validate-content.mjs   check every course for structural problems
@@ -248,7 +250,8 @@ curl -s localhost:5175/api/lessons/$SESSION/answer -H "authorization: Bearer $TO
 | `GET` | `/api/home` | Everything the home screen needs, in one call |
 | `GET` | `/api/courses`, `/api/courses/:id` | The course tree with crowns and unlock state |
 | `POST` | `/api/courses/:id/enrol`, `/:id/switch` | Start a course; make one the active course |
-| `POST` | `/api/lessons` | Start a lesson, practice, review or story |
+| `POST` | `/api/lessons` | Start a lesson, practice, review, mistakes, placement or story |
+| `GET`/`POST` | `/api/mistakes` | List the mistake bank; practise it as a free session |
 | `POST` | `/api/lessons/:id/answer` | Grade one answer, get the next exercise |
 | `GET` | `/api/lessons/:id/exercise` | Which exercise to show now (desync recovery) |
 | `GET`/`POST` | `/api/lessons/:id/hints`, `/:id/hint` | Preview the hint ladder; serve one rung |

@@ -654,6 +654,101 @@ test("review sessions serve due items and refuse when nothing is due", () => {
   assert.equal(err.code, "nothing_due");
 });
 
+test("the mistake bank lists misses and clears as they are fixed", () => {
+  const { service } = freshService();
+  const u = newUser(service);
+  service.enrol(u.id, "es-en");
+  const skill = getCourse("es-en").skills[0];
+
+  assert.deepEqual(service.mistakes(u.id, "es-en"), [], "a fresh account has no mistakes");
+  assert.equal(service.home(u.id).mistakeCount, 0);
+  const empty = (() => {
+    try { service.startSession(u.id, { courseId: "es-en", kind: "mistakes" }); }
+    catch (e) { return e; }
+  })();
+  assert.equal(empty.code, "no_mistakes");
+
+  // Miss exercises until two distinct items are missed, then walk away. (One item can
+  // appear as several exercise types in a row, so counting answers is not enough.)
+  const lesson = service.startSession(u.id, { courseId: "es-en", skillId: skill.id, kind: "lesson" });
+  const missed = new Set();
+  for (let guard = 0; guard < 12 && missed.size < 2; guard++) {
+    const cur = service.currentExercise(u.id, lesson.sessionId);
+    if (cur.finished) break;
+    missed.add(cur.exercise.itemId);
+    service.answer(u.id, lesson.sessionId, { exerciseId: cur.exercise.id, answer: "__wrong__" });
+  }
+  assert.equal(missed.size, 2);
+
+  const bank = service.mistakes(u.id, "es-en");
+  assert.equal(bank.length, 2);
+  assert.ok(bank[0].target && bank[0].source && bank[0].skillId, "entries carry display fields");
+  assert.ok(bank[0].timesWrong >= 1);
+  assert.equal(service.home(u.id).mistakeCount, 2, "home carries the count for the Learn button");
+
+  // The bank session is free: a wrong answer costs no hearts.
+  const heartsBefore = service.getUser(u.id).hearts;
+  const retry = service.startSession(u.id, { courseId: "es-en", kind: "mistakes" });
+  assert.ok(retry.total > 0, "the bank seeds a session");
+  const rcur = service.currentExercise(u.id, retry.sessionId);
+  service.answer(u.id, retry.sessionId, { exerciseId: rcur.exercise.id, answer: "__wrong__" });
+  assert.equal(service.getUser(u.id).hearts, heartsBefore, "mistake practice costs no hearts");
+
+  // Fix everything and the bank empties.
+  playSession(service, u.id, retry.sessionId);
+  assert.deepEqual(service.mistakes(u.id, "es-en"), [], "fixed items leave the bank");
+});
+
+test("a clean placement run unlocks every skill but grants no levels", () => {
+  const { service } = freshService();
+  const u = newUser(service);
+  service.enrol(u.id, "es-en");
+  const course = getCourse("es-en");
+
+  const start = service.startSession(u.id, { courseId: "es-en", kind: "placement" });
+  assert.ok(start.total >= course.skills.length, "every skill is sampled");
+
+  const seq = JSON.parse(service.database.prepare(
+    "SELECT state FROM lesson_sessions WHERE id = ?").get(start.sessionId).state)
+    .exercises.map((e) => e.skillId);
+  const ids = course.skills.map((s) => s.id);
+  assert.deepEqual([...new Set(seq)], ids.filter((id) => seq.includes(id)),
+    "skills are tested in course order");
+
+  const done = playSession(service, u.id, start.sessionId);
+  assert.equal(done.summary.placed?.id, course.skills.at(-1).id, "a clean run places at the end");
+
+  const state = service.courseState(u.id, "es-en");
+  assert.ok(state.skills.every((s) => s.unlocked), "the whole path is open");
+  assert.ok(state.skills.every((s) => s.level === 0), "levels are still earned in lessons");
+  assert.equal(state.crowns, 0, "placement grants no crowns");
+});
+
+test("placement stops at the miss ceiling and keeps the clean prefix", () => {
+  const { service } = freshService();
+  const u = newUser(service);
+  service.enrol(u.id, "es-en");
+  const course = getCourse("es-en");
+  const [first, second, third] = course.skills;
+
+  const heartsBefore = service.getUser(u.id).hearts;
+  const start = service.startSession(u.id, { courseId: "es-en", kind: "placement" });
+  const done = playSession(service, u.id, start.sessionId, {
+    answerFor: (ex) => (ex.skillId === second.id ? wrongAnswer(ex) : correctAnswer(ex)),
+  });
+
+  assert.ok(done.finished, "the ceiling ends the test");
+  assert.ok(done.summary.answered < start.total, "unreached skills stay unanswered");
+  assert.equal(done.summary.placed?.id, first.id, "only the clean prefix counts");
+  assert.equal(service.getUser(u.id).hearts, heartsBefore, "placement is free");
+
+  const state = service.courseState(u.id, "es-en");
+  const byId = new Map(state.skills.map((s) => [s.id, s]));
+  assert.equal(byId.get(first.id).unlocked, true);
+  assert.equal(byId.get(second.id).unlocked, false, "a missed skill stays locked");
+  assert.equal(byId.get(third.id).unlocked, false, "and everything after it too");
+});
+
 test("learning an item marks it learned for the course totals", () => {
   const { service } = freshService();
   const u = newUser(service);

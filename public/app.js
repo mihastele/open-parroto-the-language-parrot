@@ -100,11 +100,13 @@ function heartsRow(hearts, max = 5) {
 
 /**
  * Speech uses the browser's built-in speech synthesis, so there are no audio files to ship.
- * Falls back silently when the browser has no voice for the language.
+ * When the device has no voice for the course language we say so and show the text to read
+ * instead — a default voice reading with the wrong pronunciation teaches the wrong thing,
+ * so autoplay stays off and only an explicit tap replays with the fallback voice.
  */
 const audio = {
   speak(text, lang = "es-ES", rate = 0.9) {
-    if (!("speechSynthesis" in window)) { toast("Your browser has no speech support", "warn"); return; }
+    if (voiceStatus(lang) === "unsupported") { toast("Your browser has no speech support", "warn"); return; }
     if (!state.user?.soundEnabled) return;
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
@@ -115,6 +117,45 @@ const audio = {
     window.speechSynthesis.speak(u);
   },
 };
+
+/** Exercise types that cannot be answered without hearing the prompt. */
+function needsAudio(ex) {
+  return ex?.type === "listen_select" || ex?.type === "listen_type" ||
+    ex?.type === "identify_character" || ex?.type === "speak";
+}
+
+/**
+ * Whether the device can speak this language right now: "ok", "missing" (no matching
+ * voice), "unsupported" (no speech synthesis at all), "muted" (the learner turned sound
+ * off — their choice, nothing to explain), or "unknown" while voices still load.
+ */
+function voiceStatus(lang) {
+  if (!("speechSynthesis" in window)) return "unsupported";
+  if (!state.user?.soundEnabled) return "muted";
+  if (!lang) return "unknown";
+  const voices = window.speechSynthesis.getVoices();
+  if (!voices.length) return "unknown";
+  return voices.some((v) => v.lang?.startsWith(lang.slice(0, 2))) ? "ok" : "missing";
+}
+
+// Browsers load voices asynchronously; when they arrive mid-lesson, show or clear the
+// voice note exactly once per state change rather than on every spurious event.
+let lastVoiceKey = null;
+if ("speechSynthesis" in window) {
+  const recheckVoice = () => {
+    const ex = state.session?.exercise;
+    const key = ex ? voiceStatus(ex.audio?.lang ?? ex.tts) : null;
+    if (key !== lastVoiceKey) {
+      lastVoiceKey = key;
+      if (state.screen === "lesson" && needsAudio(ex)) render();
+    }
+  };
+  if (typeof window.speechSynthesis.addEventListener === "function") {
+    window.speechSynthesis.addEventListener("voiceschanged", recheckVoice);
+  } else {
+    window.speechSynthesis.onvoiceschanged = recheckVoice;
+  }
+}
 
 /** Voice input for speak exercises. Uses Web Speech API; degrades to typing. */
 function listenOnce(lang, onResult, onFail) {
@@ -327,6 +368,20 @@ function learnScreen() {
       }, `Course ${course.flag}`),
     ),
 
+    home.mistakeCount > 0
+      ? el("button", {
+          class: "btn btn-ghost btn-wide", style: "margin-bottom:14px",
+          onclick: showMistakes,
+        }, `🎯 Practice ${home.mistakeCount} mistake${home.mistakeCount === 1 ? "" : "s"}`)
+      : null,
+
+    course.skills.some((s) => !s.unlocked)
+      ? el("button", {
+          class: "btn btn-ghost btn-wide", style: "margin-bottom:14px",
+          onclick: confirmPlacement,
+        }, "📝 Placement test")
+      : null,
+
     course.stories.filter((s) => s.unlocked).length
       ? el("div", { class: "row", style: "gap:10px;margin-bottom:14px;overflow-x:auto" },
           ...course.stories.map((s) => el("button", {
@@ -469,6 +524,7 @@ function handleSessionError(err) {
     return;
   }
   if (err.code === "nothing_due") { toast("Nothing is due for review — try a lesson!", "good"); return; }
+  if (err.code === "no_mistakes") { toast("No mistakes to practise — nicely done!", "good"); return; }
   if (err.code === "skill_locked") { toast("Finish the previous skill first", "warn"); return; }
   if (err.code === "story_locked") { toast(err.message, "warn"); return; }
   toast(err.message || "Something went wrong", "warn");
@@ -615,10 +671,20 @@ function hintTextFor(step) {
 /** Small setup that must run after the DOM exists (autoplay, focus). */
 function afterRenderForExercise(ex) {
   if (!ex) return;
+  // Never autoplay into a missing voice: a default voice with the wrong pronunciation
+  // teaches the wrong thing. The voice note explains, and an explicit tap still replays.
   if (ex.type === "listen_select" || ex.type === "listen_type" || ex.type === "identify_character") {
-    audio.speak(ex.audio?.text ?? ex.answer, ex.audio?.lang, 0.85);
+    const status = voiceStatus(ex.audio?.lang);
+    if (status !== "missing" && status !== "unsupported") {
+      audio.speak(ex.audio?.text ?? ex.answer, ex.audio?.lang, 0.85);
+    }
   }
-  if (ex.type === "speak") audio.speak(ex.answer ?? ex.prompt, ex.tts, 0.8);
+  if (ex.type === "speak") {
+    const status = voiceStatus(ex.tts);
+    if (status !== "missing" && status !== "unsupported") {
+      audio.speak(ex.answer ?? ex.prompt, ex.tts, 0.8);
+    }
+  }
   const input = document.querySelector(".text-input");
   if (input && (ex.type === "translate" || ex.type === "listen_type")) input.focus();
 }
@@ -667,7 +733,29 @@ function exerciseView(ex) {
     default:
       body.append(el("p", { class: "muted", text: `Unsupported exercise: ${ex.type}` }));
   }
-  return el("div", {}, head, body);
+  return el("div", {}, head, voiceNote(ex), body);
+}
+
+/**
+ * Honest no-voice state: when the device cannot speak the course language, say so right
+ * where the audio would come from, and show the text to read instead so the lesson stays
+ * completable. Silent when sound is off (the learner's choice) or voices still load.
+ */
+function voiceNote(ex) {
+  if (!needsAudio(ex)) return null;
+  const lang = ex.audio?.lang ?? ex.tts;
+  const status = voiceStatus(lang);
+  if (status !== "missing" && status !== "unsupported") return null;
+  const language = state.currentCourse?.to ?? "this language";
+  return el("div", { class: "voice-note" },
+    el("span", { text: "🔇" }),
+    el("span", { class: "grow" },
+      status === "unsupported"
+        ? "This browser can't speak — read the prompt instead."
+        : `No ${language} voice on this device — read instead.`,
+      ex.audio?.text ? el("div", { class: "voice-text", text: `“${ex.audio.text}”` }) : null,
+    ),
+  );
 }
 
 function choiceGrid(ex) {
@@ -1050,11 +1138,13 @@ function showResults(summary) {
   }
   if (summary.skillUp?.unlocked) bits.push(`Unlocked ${summary.skillUp.unlocked.title}!`);
 
+  const placedTitle = summary.placed ? `Placed at ${summary.placed.title}!` : null;
   showDialog({
-    emoji: summary.passed ? (summary.mistakes === 0 ? "🏆" : "🎉") : summary.outOfHearts ? "💔" : "😅",
-    title: summary.passed
-      ? (summary.mistakes === 0 ? "Flawless!" : "Lesson complete!")
-      : summary.outOfHearts ? "Out of hearts" : "Not quite",
+    emoji: summary.placed ? "📝" : summary.passed ? (summary.mistakes === 0 ? "🏆" : "🎉") : summary.outOfHearts ? "💔" : "😅",
+    title: placedTitle ??
+      (summary.passed
+        ? (summary.mistakes === 0 ? "Flawless!" : "Lesson complete!")
+        : summary.outOfHearts ? "Out of hearts" : "Not quite"),
     body: bits.join(" · "),
     extra: el("div", { class: "col", style: "margin-top:12px;align-items:center" },
       summary.achievements?.length
@@ -1232,6 +1322,58 @@ function profileScreen() {
     el("p", { class: "small muted center", style: "margin-top:20px" },
       "Parroto · learn a language by parroting it back"),
   ));
+}
+
+/** Placement test intro: it only ever adds unlocks, so starting is consequence-free. */
+function confirmPlacement() {
+  showDialog({
+    emoji: "📝",
+    title: "Placement test",
+    body: "Each skill asks its questions in order. The test ends after 2 misses and unlocks everything you prove — levels and crowns are still earned in lessons.",
+    actions: [
+      {
+        label: "Start test", kind: "primary",
+        onclick: () => { closeDialog(); startSession({ kind: "placement" }); },
+      },
+      { label: "Not now", kind: "ghost", onclick: closeDialog },
+    ],
+  });
+}
+
+/** The mistake bank: browse recent misses, then practise them as a free session. */
+async function showMistakes() {
+  let list = [];
+  try {
+    const res = await API.get(`/api/mistakes?courseId=${state.currentCourse.id}`);
+    list = res.mistakes ?? [];
+  } catch (e) {
+    return toast(e.message, "warn");
+  }
+  if (!list.length) return toast("No mistakes to practise — nicely done!", "good");
+  const shown = list.slice(0, 8);
+  showDialog({
+    emoji: "🎯",
+    title: "Mistake bank",
+    body: "Words you missed and haven't fixed yet. Practising them is free.",
+    extra: el("div", { class: "col", style: "margin-top:14px;text-align:left" },
+      ...shown.map((m) => el("div", { class: "row-between", style: "padding:6px 0" },
+        el("span", {},
+          el("div", { class: "bold", text: m.target }),
+          el("div", { class: "small muted", text: m.source })),
+        m.timesWrong > 1 ? el("span", { class: "pill", text: `×${m.timesWrong}` }) : null,
+      )),
+      list.length > shown.length
+        ? el("div", { class: "small muted center" }, `…and ${list.length - shown.length} more`)
+        : null,
+    ),
+    actions: [
+      {
+        label: `Practise ${list.length} word${list.length === 1 ? "" : "s"}`, kind: "primary",
+        onclick: () => { closeDialog(); startSession({ kind: "mistakes" }); },
+      },
+      { label: "Close", kind: "ghost", onclick: closeDialog },
+    ],
+  });
 }
 
 /** A quick course switcher, so changing language does not require a trip to Profile. */
